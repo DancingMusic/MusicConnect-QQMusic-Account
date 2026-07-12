@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="refresh" content="0; url=https://dancingmusic.github.io/docs/connectors/implementations">
+  <link rel="canonical" href="https://dancingmusic.github.io/docs/connectors/implementations">
+  <title>QQ 音乐账号连接器文档已迁移</title>
+</head>
+<body>
+  <p>QQ 音乐账号连接器文档已迁移至 <a href="https://dancingmusic.github.io/docs/connectors/implementations">DancingMusic 统一文档站</a>。本页面不接收或保存账号凭据。</p>
+  <script>
+    for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+      const key = localStorage.key(index);
+      if (key && key.startsWith('musicconnect-demo-config:')) localStorage.removeItem(key);
+    }
+    location.replace('https://dancingmusic.github.io/docs/connectors/implementations');
+  </script>
+</body>
+</html>
