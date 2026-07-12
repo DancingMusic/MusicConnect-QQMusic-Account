@@ -1,15 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { QQMusicAccountConnector } from "../index";
 
-const BASE = "https://mock-qq.test";
 const VALID_COOKIE = "uin=123456; qm_keyst=account-session-secret";
-
-function jsonResponse(body: unknown): Response {
-  return new Response(JSON.stringify(body), {
-    status: 200,
-    headers: { "content-type": "application/json" },
-  });
-}
 
 describe("QQMusicAccountConnector", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -22,10 +14,10 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.1.0",
+      version: "0.2.0",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "playlist", "login"]));
-    expect(connector.meta.configSchema?.map(field => field.key)).toEqual(["apiBaseUrl"]);
+    expect(connector.meta.configSchema).toBeUndefined();
   });
 
   it("starts official web QR login with desktop cookie capture metadata", async () => {
@@ -96,64 +88,46 @@ describe("QQMusicAccountConnector", () => {
     expect(result.actions?.[0]?.cookieCapture?.provider).toBe("qq-music");
   });
 
-  it("requires a credential-free HTTPS gateway except on loopback", async () => {
-    const connector = new QQMusicAccountConnector();
-    await expect(connector.init({ apiBaseUrl: "http://gateway.example.com" })).rejects.toThrow("HTTPS");
-    await expect(connector.init({ apiBaseUrl: "https://user:secret@gateway.example.com" })).rejects.toThrow("内嵌凭据");
-    await expect(connector.init({ apiBaseUrl: "https://gateway.example.com?cookie=secret" })).rejects.toThrow("查询参数");
-    await expect(connector.init({ apiBaseUrl: "http://127.0.0.1:3400" })).resolves.toBeUndefined();
-  });
-
-  it("returns empty catalog results when no gateway is configured", async () => {
-    const connector = new QQMusicAccountConnector();
-    await connector.init({ cookie: VALID_COOKIE });
-    expect(await connector.search({ keyword: "周杰伦" })).toMatchObject({ tracks: [], total: 0 });
-    expect(await connector.getTrack("qq:track")).toBeNull();
-    expect(await connector.getStreamUrl("qq:track")).toBeNull();
-  });
-
-  it("maps credential-free gateway search results", async () => {
-    vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({
-      data: {
-        list: [{
-          songmid: "001fakp82WoZ8u",
-          songname: "晴天",
-          singer: [{ name: "周杰伦" }],
-          albumname: "叶惠美",
-          albummid: "002Neh8l0RxIPZ",
-          interval: 269,
-        }],
-        total: 1,
-      },
-    }));
-    const connector = new QQMusicAccountConnector();
-    await connector.init({ apiBaseUrl: BASE, cookie: VALID_COOKIE });
-    const result = await connector.search({ keyword: "周杰伦", pageSize: 10 });
-    expect(result.tracks[0]).toMatchObject({
-      id: "qq:001fakp82WoZ8u",
-      title: "晴天",
-      artist: "周杰伦",
-      album: "叶惠美",
-      durationSec: 269,
-    });
-  });
-
-  it("never forwards the account cookie to the configurable gateway", async () => {
-    let requestUrl = "";
-    let requestInit: RequestInit | undefined;
-    vi.spyOn(globalThis, "fetch").mockImplementation((input, init) => {
-      requestUrl = typeof input === "string" ? input : input.toString();
-      requestInit = init;
-      return Promise.resolve(jsonResponse({ data: { list: [], total: 0 } }));
+  it("loads online account profile and membership through the host operation", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      expect(operation).toBe("qq.account.profile");
+      return {
+        req_1: { data: { infoMap: { "123456": { iSuperVip: 1 } } } },
+        req_2: { data: { map_userinfo: { "123456": { nick: "Dancing QQ", headurl: "http://qlogo.cn/avatar.jpg" } } } },
+      };
     });
     const connector = new QQMusicAccountConnector();
-    await connector.init({ apiBaseUrl: BASE, cookie: VALID_COOKIE });
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const status = await connector.login({ intent: "status" });
+    expect(status.user).toEqual({ id: "123456", name: "Dancing QQ", avatarUrl: "https://qlogo.cn/avatar.jpg" });
+    expect(JSON.stringify(status)).toContain("豪华绿钻");
+  });
+
+  it("maps account playlists and their tracks without apiBaseUrl", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.account.playlists") return {
+        req_1: { data: { v_playlist: [{ tid: 88, dirName: "我喜欢", picurl: "http://y.gtimg.cn/cover.jpg", song_cnt: 2 }] } },
+      };
+      if (operation === "qq.playlist.tracks") return {
+        req_1: { data: { total_song_num: 1, songlist: [{ mid: "001abc", name: "测试歌", singer: [{ name: "歌手" }], album: { name: "专辑", mid: "002album" }, interval: 200 }] } },
+      };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const playlists = await connector.listPlaylists!();
+    expect(playlists.playlists[0]).toMatchObject({ id: "qq-playlist:88", name: "我喜欢", coverUrl: "https://y.gtimg.cn/cover.jpg" });
+    const tracks = await connector.getPlaylistTracks!(playlists.playlists[0].id);
+    expect(tracks.tracks[0]).toMatchObject({ id: "qq:001abc", title: "测试歌", artist: "歌手" });
+  });
+
+  it("uses only reviewed host operation ids and never exposes the cookie", async () => {
+    const officialProviderRequest = vi.fn(async () => ({ req_1: { data: { body: { song: { list: [] } }, meta: { sum: 0 } } } }));
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     await connector.search({ keyword: "周杰伦" });
-
-    expect(requestUrl).toContain("key=%E5%91%A8%E6%9D%B0%E4%BC%A6");
-    expect(requestUrl).not.toContain("cookie");
-    expect(requestUrl).not.toContain("account-session-secret");
-    expect(JSON.stringify(requestInit)).not.toContain("account-session-secret");
-    expect(requestInit?.headers).toEqual({ Accept: "application/json" });
+    expect(officialProviderRequest).toHaveBeenLastCalledWith("qq.catalog.search", { query: "周杰伦", page: 1, pageSize: 30 });
+    expect(JSON.stringify(officialProviderRequest.mock.calls)).not.toContain("account-session-secret");
   });
 });
