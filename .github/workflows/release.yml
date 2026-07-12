@@ -51,35 +51,20 @@ jobs:
         id: pkg
         run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
 
-      - name: Release already exists?
-        id: check
+      - name: Ensure tag and GitHub Release exist
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="v${{ steps.pkg.outputs.version }}"
-          # Treat the version as already released if EITHER the git tag exists
-          # OR a GitHub Release exists. Either way we have nothing to do.
-          tag_exists=false
-          rel_exists=false
-          git rev-parse "$tag" >/dev/null 2>&1 && tag_exists=true
-          gh release view "$tag" >/dev/null 2>&1 && rel_exists=true
-          if [ "$tag_exists" = true ] || [ "$rel_exists" = true ]; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "Already released (tag=$tag_exists release=$rel_exists); skipping."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
+          git fetch --force --tags origin
+          if ! git rev-parse "$tag" >/dev/null 2>&1; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag "$tag"
+            git push origin "$tag"
           fi
-
-      - name: Create tag and GitHub Release
-        if: steps.check.outputs.exists == 'false'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          tag="v${{ steps.pkg.outputs.version }}"
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag "$tag"
-          git push origin "$tag"
-          gh release create "$tag" dist/index.js \
-            --title "$tag" \
-            --notes "Auto-released from \`${GITHUB_SHA::7}\`. Pin via cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${tag}/dist/index.js"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" dist/index.js \
+              --title "$tag" \
+              --notes "Auto-released from \`${GITHUB_SHA::7}\`. Pin via cdn.jsdelivr.net/gh/${GITHUB_REPOSITORY}@${tag}/dist/index.js"
+          fi
