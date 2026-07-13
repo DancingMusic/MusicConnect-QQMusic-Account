@@ -9,15 +9,19 @@ import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicCo
  */
 
 interface QQMusicAccountConfig {
-    apiBaseUrl?: string;
     /** Secret injected at runtime by the DancingMusic host credential vault. */
     cookie?: string;
 }
+interface QQMusicAccountHost {
+    officialProviderRequest?<T = unknown>(operation: string, params?: Record<string, unknown>): Promise<T>;
+}
 declare class QQMusicAccountConnector implements MusicConnector {
     readonly meta: MusicConnectorMeta;
-    private baseUrl;
     private cookie;
-    init(config?: Record<string, unknown>): Promise<void>;
+    private host;
+    private profile;
+    private tracks;
+    init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void>;
     login(request?: MusicConnectorLoginRequest): Promise<MusicConnectorLoginResult>;
     search(query: MusicListQuery): Promise<MusicSearchResult>;
     getTrack(trackId: string): Promise<MusicTrack | null>;
@@ -30,7 +34,8 @@ declare class QQMusicAccountConnector implements MusicConnector {
     private startWebLogin;
     private parseTrackId;
     private parsePlaylistId;
-    private request;
+    private official;
+    private refreshProfile;
 }
 
 export { type QQMusicAccountConfig, QQMusicAccountConnector, QQMusicAccountConnector as default };

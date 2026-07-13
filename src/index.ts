@@ -20,9 +20,12 @@ import type {
 } from "@dancingmusic/music-connect";
 
 export interface QQMusicAccountConfig {
-  apiBaseUrl?: string;
   /** Secret injected at runtime by the DancingMusic host credential vault. */
   cookie?: string;
+}
+
+interface QQMusicAccountHost {
+  officialProviderRequest?<T = unknown>(operation: string, params?: Record<string, unknown>): Promise<T>;
 }
 
 const QQ_WEB_COOKIE_FLOW_ID = "qq-music-account-web-cookie";
@@ -167,6 +170,65 @@ function toPlaylist(playlist: QQPlaylist): MusicPlaylist {
   };
 }
 
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function text(value: unknown): string {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+function httpsUrl(value: unknown): string | undefined {
+  const raw = text(value).trim();
+  if (!raw) return undefined;
+  if (raw.startsWith("//")) return `https:${raw}`;
+  return raw.replace(/^http:\/\//i, "https://");
+}
+
+function toOfficialTrack(value: unknown): MusicTrack | null {
+  const outer = asRecord(value);
+  const song = asRecord(outer?.songInfo) ?? outer;
+  if (!song) return null;
+  const mid = text(song.mid ?? song.songmid);
+  if (!mid) return null;
+  const singers = asArray(song.singer).map(asRecord).map(item => text(item?.name)).filter(Boolean);
+  const album = asRecord(song.album) ?? asRecord(song.al);
+  const albumMid = text(album?.mid ?? song.albummid);
+  return {
+    id: `qq:${mid}`,
+    title: text(song.name ?? song.title ?? song.songname) || "Unknown",
+    artist: singers.join(", ") || "Unknown",
+    album: text(album?.name ?? song.albumname) || undefined,
+    coverUrl: albumMid ? albumCover(albumMid) : httpsUrl(song.picurl),
+    durationSec: Number(song.interval ?? song.duration ?? 0),
+    price: 0,
+    currency: "CNY",
+    version: "1.0.0",
+    createdAt: "",
+    updatedAt: "",
+  };
+}
+
+function toOfficialPlaylist(value: unknown): MusicPlaylist | null {
+  const item = asRecord(value);
+  if (!item) return null;
+  const id = text(item.tid ?? item.dirid ?? item.dissid ?? item.id);
+  if (!id) return null;
+  return {
+    id: `qq-playlist:${id}`,
+    name: text(item.dirName ?? item.diss_name ?? item.dissname ?? item.name) || "QQ 音乐歌单",
+    description: text(item.desc ?? item.description) || undefined,
+    coverUrl: httpsUrl(item.picUrl ?? item.bigpicUrl ?? item.picurl ?? item.cover_url_big ?? item.coverUrl),
+    trackCount: Number(item.song_cnt ?? item.song_count ?? item.songNum ?? 0) || undefined,
+    curator: text(item.creator?.toString()) || undefined,
+    externalUrl: `https://y.qq.com/n/ryqq/playlist/${id}`,
+  };
+}
+
 export class QQMusicAccountConnector implements MusicConnector {
   readonly meta: MusicConnectorMeta = {
     id: "qq-music-account",
@@ -175,34 +237,29 @@ export class QQMusicAccountConnector implements MusicConnector {
     authRequirement: "required",
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
-    description: "QQ Music account login through the official web page with a credential-free catalog gateway",
-    version: "0.1.0",
-    capabilities: ["search", "stream", "playlist", "login"],
-    configSchema: [{
-      key: "apiBaseUrl",
-      label: "QQ Music API 端点",
-      type: "url",
-      required: false,
-      placeholder: "https://your-qqmusic-gateway.example.com",
-      help: "可选的无凭据目录网关。账号 Cookie 不会发送到此地址。",
-    }],
+    description: "QQ Music account login and catalog through the host-owned official provider adapter",
+    version: "0.2.0",
+    capabilities: ["search", "stream", "playlist", "login", "user-library", "recommendations"],
   };
 
-  private baseUrl = "";
   private cookie = "";
+  private host: QQMusicAccountHost | null = null;
+  private profile: { id?: string; name?: string; avatarUrl?: string; membershipLabel?: string } | null = null;
+  private tracks = new Map<string, MusicTrack>();
 
-  async init(config?: Record<string, unknown>): Promise<void> {
+  async init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void> {
     const typed = config as QQMusicAccountConfig | undefined;
-    const configuredUrl = (typed?.apiBaseUrl || "").trim();
-    this.baseUrl = configuredUrl ? validateBaseUrl(configuredUrl) : "";
     this.cookie = typeof typed?.cookie === "string" && qqCookieHasLogin(typed.cookie) ? typed.cookie : "";
+    this.host = host ?? null;
+    if (this.cookie && this.host?.officialProviderRequest) await this.refreshProfile().catch(() => undefined);
   }
 
   async login(request: MusicConnectorLoginRequest = { intent: "status" }): Promise<MusicConnectorLoginResult> {
     const intent = request.intent ?? "status";
     if (intent === "status") {
+      if (this.cookie && this.host?.officialProviderRequest) await this.refreshProfile().catch(() => undefined);
       return this.cookie
-        ? { status: "authenticated", message: "QQ 音乐账号会话可用" }
+        ? { status: "authenticated", user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : undefined, membership: this.profile?.membershipLabel ? { label: this.profile.membershipLabel } : undefined, message: "QQ 音乐账号会话可用" } as MusicConnectorLoginResult
         : { status: "anonymous", message: "未登录 QQ 音乐" };
     }
     if (intent === "logout") {
@@ -224,12 +281,15 @@ export class QQMusicAccountConnector implements MusicConnector {
         return { status: "error", message: "未读取到有效 QQ 音乐会话 Cookie" };
       }
       this.cookie = submittedCookie;
+      await this.refreshProfile().catch(() => undefined);
       return {
         status: "authenticated",
+        user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : undefined,
+        ...(this.profile?.membershipLabel ? { membership: { label: this.profile.membershipLabel } } : {}),
         message: qqCookieHasPlaybackLogin(submittedCookie)
           ? "QQ 音乐登录成功"
           : "QQ 音乐登录成功；如部分歌曲无法播放，请重新登录以补全播放会话",
-      };
+      } as MusicConnectorLoginResult;
     }
     return this.startWebLogin();
   }
@@ -238,50 +298,56 @@ export class QQMusicAccountConnector implements MusicConnector {
     const keyword = (query.keyword || "").trim();
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    if (!keyword || !this.baseUrl) return { tracks: [], total: 0, page, pageSize };
-    const data = await this.request<QQSearchResponse>("/search", { key: keyword, pageNo: page, pageSize });
-    const list = data.data?.list ?? data.data?.song?.list ?? [];
-    return { tracks: list.map(toTrack), total: data.data?.total ?? data.data?.song?.totalnum ?? list.length, page, pageSize };
+    if (!keyword) return { tracks: [], total: 0, page, pageSize };
+    const response = await this.official<Record<string, unknown>>("qq.catalog.search", { query: keyword, page, pageSize });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const body = asRecord(data?.body);
+    const song = asRecord(body?.song);
+    const list = asArray(song?.list).map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    list.forEach(item => this.tracks.set(item.id, item));
+    const meta = asRecord(data?.meta);
+    return { tracks: list, total: Number(meta?.sum ?? list.length), page, pageSize };
   }
 
   async getTrack(trackId: string): Promise<MusicTrack | null> {
-    const mid = this.parseTrackId(trackId);
-    if (!mid || !this.baseUrl) return null;
-    const data = await this.request<{ data?: QQSong | QQSong[] }>("/song", { songmid: mid });
-    const song = Array.isArray(data.data) ? data.data[0] : data.data;
-    return song ? toTrack(song) : null;
+    return this.tracks.get(trackId) ?? null;
   }
 
   async getStreamUrl(trackId: string): Promise<MusicStreamInfo | null> {
     const mid = this.parseTrackId(trackId);
-    if (!mid || !this.baseUrl) return null;
-    const data = await this.request<QQSongUrlResponse>("/song/url", { id: mid });
-    const url = typeof data.data === "string" ? data.data : data.data?.playUrl?.[mid];
-    return url ? { url, format: "mp3" } : null;
+    if (!mid) return null;
+    const response = await this.official<Record<string, unknown>>("qq.stream.resolve", { songmid: mid });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const midurlinfo = asArray(data?.midurlinfo).map(asRecord).find(Boolean);
+    const purl = typeof midurlinfo?.purl === "string" ? midurlinfo.purl : "";
+    const sip = asArray(data?.sip).find(value => typeof value === "string") as string | undefined;
+    return purl && sip ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
   }
 
   async listPlaylists(query: MusicPlaylistQuery = {}): Promise<MusicPlaylistList> {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    if (!this.baseUrl) return { playlists: [], total: 0, page, pageSize };
-    const data = await this.request<{ data?: { list?: QQPlaylist[]; total?: number } }>("/top/playlist", {
-      pageNo: page,
-      pageSize,
-      sortId: query.sort === "new" ? 2 : 5,
-      ...(query.category ? { categoryId: query.category } : {}),
-    });
-    const list = data.data?.list ?? [];
-    return { playlists: list.map(toPlaylist), total: data.data?.total ?? list.length, page, pageSize };
+    const response = await this.official<Record<string, unknown>>("qq.account.playlists");
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const all = asArray(data?.v_playlist).map(toOfficialPlaylist).filter((item): item is MusicPlaylist => !!item);
+    const start = Math.max(0, (page - 1) * pageSize);
+    return { playlists: all.slice(start, start + pageSize), total: all.length, page, pageSize };
   }
 
   async getPlaylistTracks(playlistId: string, opts: { page?: number; pageSize?: number } = {}): Promise<MusicSearchResult> {
     const page = opts.page ?? 1;
     const pageSize = opts.pageSize ?? 30;
     const id = this.parsePlaylistId(playlistId);
-    if (!id || !this.baseUrl) return { tracks: [], total: 0, page, pageSize };
-    const data = await this.request<{ data?: { songlist?: QQSong[] } }>("/playlist", { id });
-    const songs = data.data?.songlist ?? [];
-    return { tracks: songs.map(toTrack), total: songs.length, page, pageSize };
+    if (!id) return { tracks: [], total: 0, page, pageSize };
+    const response = await this.official<Record<string, unknown>>("qq.playlist.tracks", {
+      playlistId: id,
+      offset: Math.max(0, (page - 1) * pageSize),
+      limit: pageSize,
+    });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const songs = asArray(data?.songlist).map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    songs.forEach(item => this.tracks.set(item.id, item));
+    return { tracks: songs, total: Number(data?.total_song_num ?? songs.length), page, pageSize };
   }
 
   private startWebLogin(message = "请在 QQ 音乐官方页面扫码登录；桌面端会自动安全保存账号会话"): MusicConnectorLoginResult {
@@ -317,15 +383,32 @@ export class QQMusicAccountConnector implements MusicConnector {
     return playlistId.startsWith("qq-playlist:") ? playlistId.slice("qq-playlist:".length) : playlistId || null;
   }
 
-  private async request<T>(path: string, params: Record<string, string | number> = {}): Promise<T> {
-    const url = new URL(path, `${this.baseUrl}/`);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-    const response = await fetch(url.toString(), {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(15_000),
-    });
-    if (!response.ok) throw new Error(`QQ Music API failed: ${response.status} ${response.statusText}`);
-    return response.json() as Promise<T>;
+  private async official<T>(operation: string, params: Record<string, unknown> = {}): Promise<T> {
+    if (!this.cookie) throw new Error("QQ_MUSIC_LOGIN_REQUIRED");
+    if (!this.host?.officialProviderRequest) throw new Error("QQ_MUSIC_OFFICIAL_PROVIDER_UNAVAILABLE");
+    return this.host.officialProviderRequest<T>(operation, params);
+  }
+
+  private async refreshProfile(): Promise<void> {
+    const response = await this.official<Record<string, unknown>>("qq.account.profile");
+    const cookie = parseCookieHeader(this.cookie);
+    const uin = (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "").replace(/\D/g, "");
+    const baseMap = asRecord(asRecord(asRecord(response.req_2)?.data)?.map_userinfo);
+    const base = asRecord(baseMap?.[uin]);
+    const vipMap = asRecord(asRecord(asRecord(response.req_1)?.data)?.infoMap);
+    const vip = asRecord(vipMap?.[uin]);
+    const memberships: string[] = [];
+    if (Number(vip?.HugeVip)) memberships.push("超级会员");
+    if (Number(vip?.iSuperVip)) memberships.push("豪华绿钻");
+    else if (Number(vip?.iVipFlag)) memberships.push("绿钻");
+    if (Number(vip?.itwelve)) memberships.push("豪华音乐包");
+    else if (Number(vip?.ieight)) memberships.push("音乐包");
+    this.profile = {
+      id: uin || undefined,
+      name: text(base?.nick) || undefined,
+      avatarUrl: httpsUrl(base?.headurl),
+      membershipLabel: memberships.join(" · ") || undefined,
+    };
   }
 }
 

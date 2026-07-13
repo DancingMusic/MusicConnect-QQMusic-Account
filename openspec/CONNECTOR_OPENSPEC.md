@@ -15,9 +15,11 @@
 - QQ 音乐官方网页扫码登录描述与桌面端 Cookie 捕获契约
 - 手机端通过受信任桌面设备同步使用账号能力
 - 登录状态、继续、取消和退出意图
-- 与匿名版一致的无凭据目录网关能力：搜索、歌曲、播放地址和歌单
+- 扫码后通过宿主受控代理访问 QQ 官方域曲库接口
+- 无需用户填写 Base URL 的搜索、歌曲、播放地址和账号歌单
 
-首版不提供账号收藏、会员解锁或推荐能力，也不声称目录网关代表 QQ 音乐官方 API。
+账号 Cookie 仅由宿主官方域代理使用，不进入第三方网关、连接器配置或 URL。
+首版不承诺会员解锁；不可播放的版权内容允许返回空播放地址。
 
 ## Connector Identity
 
@@ -62,16 +64,10 @@ Web 和手机宿主不能跨站读取 QQ 音乐 HttpOnly Cookie，因此 MUST NO
 
 ## Catalog Gateway
 
-可选的 `apiBaseUrl` 必须使用 HTTPS；本地开发仅允许 loopback HTTP。地址不得包含
-用户名、密码、查询参数或片段。未配置网关时目录方法安全返回空结果。
-
-稳定路由：
-
-- `GET /search?key=...&pageNo=...&pageSize=...`
-- `GET /song?songmid=...`
-- `GET /song/url?id=...`
-- `GET /top/playlist?pageNo=...&pageSize=...&sortId=...`
-- `GET /playlist?id=...`
+账号实现 MUST NOT 暴露 `apiBaseUrl`。登录完成后，连接器向声明过的 QQ 官方 HTTPS
+origin 发起请求；宿主在隔离的 `qq-music` session 中执行请求并自动附带该 session 的
+Cookie。宿主 MUST 校验连接器安装 ID、HTTP 方法和目标 origin，禁止重定向或转发到
+第三方域。Web 与 Mobile 不提供此代理，而是通过受信任桌面设备同步账号能力。
 
 ## Verification
 

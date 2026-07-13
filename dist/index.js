@@ -24,18 +24,6 @@ var QQ_COOKIE_PRIORITY = [
   "ptcz",
   "RK"
 ];
-function validateBaseUrl(value) {
-  const url = new URL(value);
-  const loopback = url.hostname === "localhost" || url.hostname === "127.0.0.1" || url.hostname === "[::1]";
-  if (url.protocol !== "https:" && !(loopback && url.protocol === "http:")) {
-    throw new Error("QQ \u97F3\u4E50\u7F51\u5173\u5FC5\u987B\u4F7F\u7528 HTTPS\uFF1B\u672C\u5730\u5F00\u53D1\u4EC5\u5141\u8BB8 loopback HTTP");
-  }
-  if (url.username || url.password || url.search || url.hash) {
-    throw new Error("QQ \u97F3\u4E50\u7F51\u5173\u5730\u5740\u4E0D\u80FD\u5305\u542B\u5185\u5D4C\u51ED\u636E\u3001\u67E5\u8BE2\u53C2\u6570\u6216\u7247\u6BB5");
-  }
-  url.pathname = url.pathname.replace(/\/$/, "");
-  return url.toString().replace(/\/$/, "");
-}
 function parseCookieHeader(cookieText) {
   const result = {};
   for (const part of cookieText.split(";")) {
@@ -61,21 +49,40 @@ function qqCookieHasPlaybackLogin(cookieText) {
   const playbackKey = cookie.qm_keyst || cookie.qqmusic_key || cookie.music_key || cookie.wxskey || "";
   return Boolean(uin && playbackKey);
 }
-function joinSinger(song) {
-  return song.singer?.map((item) => item?.name).filter(Boolean).join(", ") || "";
-}
 function albumCover(mid) {
   return mid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${mid}.jpg` : void 0;
 }
-function toTrack(song) {
-  const id = song.songmid || "";
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function asArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+function text(value) {
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+function httpsUrl(value) {
+  const raw = text(value).trim();
+  if (!raw) return void 0;
+  if (raw.startsWith("//")) return `https:${raw}`;
+  return raw.replace(/^http:\/\//i, "https://");
+}
+function toOfficialTrack(value) {
+  const outer = asRecord(value);
+  const song = asRecord(outer?.songInfo) ?? outer;
+  if (!song) return null;
+  const mid = text(song.mid ?? song.songmid);
+  if (!mid) return null;
+  const singers = asArray(song.singer).map(asRecord).map((item) => text(item?.name)).filter(Boolean);
+  const album = asRecord(song.album) ?? asRecord(song.al);
+  const albumMid = text(album?.mid ?? song.albummid);
   return {
-    id: `qq:${id}`,
-    title: song.songname || "Unknown",
-    artist: joinSinger(song) || "Unknown",
-    album: song.albumname,
-    coverUrl: albumCover(song.albummid),
-    durationSec: song.interval ?? 0,
+    id: `qq:${mid}`,
+    title: text(song.name ?? song.title ?? song.songname) || "Unknown",
+    artist: singers.join(", ") || "Unknown",
+    album: text(album?.name ?? song.albumname) || void 0,
+    coverUrl: albumMid ? albumCover(albumMid) : httpsUrl(song.picurl),
+    durationSec: Number(song.interval ?? song.duration ?? 0),
     price: 0,
     currency: "CNY",
     version: "1.0.0",
@@ -83,16 +90,19 @@ function toTrack(song) {
     updatedAt: ""
   };
 }
-function toPlaylist(playlist) {
-  const id = String(playlist.dissid ?? playlist.disstid ?? "");
+function toOfficialPlaylist(value) {
+  const item = asRecord(value);
+  if (!item) return null;
+  const id = text(item.tid ?? item.dirid ?? item.dissid ?? item.id);
+  if (!id) return null;
   return {
     id: `qq-playlist:${id}`,
-    name: playlist.dissname || "Unknown",
-    description: playlist.introduction,
-    coverUrl: playlist.imgurl,
-    trackCount: playlist.song_count ?? playlist.song_num,
-    curator: playlist.creator?.name,
-    externalUrl: id ? `https://y.qq.com/n/ryqq/playlist/${id}` : void 0
+    name: text(item.dirName ?? item.diss_name ?? item.dissname ?? item.name) || "QQ \u97F3\u4E50\u6B4C\u5355",
+    description: text(item.desc ?? item.description) || void 0,
+    coverUrl: httpsUrl(item.picUrl ?? item.bigpicUrl ?? item.picurl ?? item.cover_url_big ?? item.coverUrl),
+    trackCount: Number(item.song_cnt ?? item.song_count ?? item.songNum ?? 0) || void 0,
+    curator: text(item.creator?.toString()) || void 0,
+    externalUrl: `https://y.qq.com/n/ryqq/playlist/${id}`
   };
 }
 var QQMusicAccountConnector = class {
@@ -104,31 +114,26 @@ var QQMusicAccountConnector = class {
       authRequirement: "required",
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
-      description: "QQ Music account login through the official web page with a credential-free catalog gateway",
-      version: "0.1.0",
-      capabilities: ["search", "stream", "playlist", "login"],
-      configSchema: [{
-        key: "apiBaseUrl",
-        label: "QQ Music API \u7AEF\u70B9",
-        type: "url",
-        required: false,
-        placeholder: "https://your-qqmusic-gateway.example.com",
-        help: "\u53EF\u9009\u7684\u65E0\u51ED\u636E\u76EE\u5F55\u7F51\u5173\u3002\u8D26\u53F7 Cookie \u4E0D\u4F1A\u53D1\u9001\u5230\u6B64\u5730\u5740\u3002"
-      }]
+      description: "QQ Music account login and catalog through the host-owned official provider adapter",
+      version: "0.2.0",
+      capabilities: ["search", "stream", "playlist", "login", "user-library", "recommendations"]
     };
-    this.baseUrl = "";
     this.cookie = "";
+    this.host = null;
+    this.profile = null;
+    this.tracks = /* @__PURE__ */ new Map();
   }
-  async init(config) {
+  async init(config, host) {
     const typed = config;
-    const configuredUrl = (typed?.apiBaseUrl || "").trim();
-    this.baseUrl = configuredUrl ? validateBaseUrl(configuredUrl) : "";
     this.cookie = typeof typed?.cookie === "string" && qqCookieHasLogin(typed.cookie) ? typed.cookie : "";
+    this.host = host ?? null;
+    if (this.cookie && this.host?.officialProviderRequest) await this.refreshProfile().catch(() => void 0);
   }
   async login(request = { intent: "status" }) {
     const intent = request.intent ?? "status";
     if (intent === "status") {
-      return this.cookie ? { status: "authenticated", message: "QQ \u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u53EF\u7528" } : { status: "anonymous", message: "\u672A\u767B\u5F55 QQ \u97F3\u4E50" };
+      if (this.cookie && this.host?.officialProviderRequest) await this.refreshProfile().catch(() => void 0);
+      return this.cookie ? { status: "authenticated", user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : void 0, membership: this.profile?.membershipLabel ? { label: this.profile.membershipLabel } : void 0, message: "QQ \u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u53EF\u7528" } : { status: "anonymous", message: "\u672A\u767B\u5F55 QQ \u97F3\u4E50" };
     }
     if (intent === "logout") {
       this.cookie = "";
@@ -149,8 +154,11 @@ var QQMusicAccountConnector = class {
         return { status: "error", message: "\u672A\u8BFB\u53D6\u5230\u6709\u6548 QQ \u97F3\u4E50\u4F1A\u8BDD Cookie" };
       }
       this.cookie = submittedCookie;
+      await this.refreshProfile().catch(() => void 0);
       return {
         status: "authenticated",
+        user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : void 0,
+        ...this.profile?.membershipLabel ? { membership: { label: this.profile.membershipLabel } } : {},
         message: qqCookieHasPlaybackLogin(submittedCookie) ? "QQ \u97F3\u4E50\u767B\u5F55\u6210\u529F" : "QQ \u97F3\u4E50\u767B\u5F55\u6210\u529F\uFF1B\u5982\u90E8\u5206\u6B4C\u66F2\u65E0\u6CD5\u64AD\u653E\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u4EE5\u8865\u5168\u64AD\u653E\u4F1A\u8BDD"
       };
     }
@@ -160,46 +168,52 @@ var QQMusicAccountConnector = class {
     const keyword = (query.keyword || "").trim();
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    if (!keyword || !this.baseUrl) return { tracks: [], total: 0, page, pageSize };
-    const data = await this.request("/search", { key: keyword, pageNo: page, pageSize });
-    const list = data.data?.list ?? data.data?.song?.list ?? [];
-    return { tracks: list.map(toTrack), total: data.data?.total ?? data.data?.song?.totalnum ?? list.length, page, pageSize };
+    if (!keyword) return { tracks: [], total: 0, page, pageSize };
+    const response = await this.official("qq.catalog.search", { query: keyword, page, pageSize });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const body = asRecord(data?.body);
+    const song = asRecord(body?.song);
+    const list = asArray(song?.list).map(toOfficialTrack).filter((item) => !!item);
+    list.forEach((item) => this.tracks.set(item.id, item));
+    const meta = asRecord(data?.meta);
+    return { tracks: list, total: Number(meta?.sum ?? list.length), page, pageSize };
   }
   async getTrack(trackId) {
-    const mid = this.parseTrackId(trackId);
-    if (!mid || !this.baseUrl) return null;
-    const data = await this.request("/song", { songmid: mid });
-    const song = Array.isArray(data.data) ? data.data[0] : data.data;
-    return song ? toTrack(song) : null;
+    return this.tracks.get(trackId) ?? null;
   }
   async getStreamUrl(trackId) {
     const mid = this.parseTrackId(trackId);
-    if (!mid || !this.baseUrl) return null;
-    const data = await this.request("/song/url", { id: mid });
-    const url = typeof data.data === "string" ? data.data : data.data?.playUrl?.[mid];
-    return url ? { url, format: "mp3" } : null;
+    if (!mid) return null;
+    const response = await this.official("qq.stream.resolve", { songmid: mid });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const midurlinfo = asArray(data?.midurlinfo).map(asRecord).find(Boolean);
+    const purl = typeof midurlinfo?.purl === "string" ? midurlinfo.purl : "";
+    const sip = asArray(data?.sip).find((value) => typeof value === "string");
+    return purl && sip ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
   }
   async listPlaylists(query = {}) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
-    if (!this.baseUrl) return { playlists: [], total: 0, page, pageSize };
-    const data = await this.request("/top/playlist", {
-      pageNo: page,
-      pageSize,
-      sortId: query.sort === "new" ? 2 : 5,
-      ...query.category ? { categoryId: query.category } : {}
-    });
-    const list = data.data?.list ?? [];
-    return { playlists: list.map(toPlaylist), total: data.data?.total ?? list.length, page, pageSize };
+    const response = await this.official("qq.account.playlists");
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const all = asArray(data?.v_playlist).map(toOfficialPlaylist).filter((item) => !!item);
+    const start = Math.max(0, (page - 1) * pageSize);
+    return { playlists: all.slice(start, start + pageSize), total: all.length, page, pageSize };
   }
   async getPlaylistTracks(playlistId, opts = {}) {
     const page = opts.page ?? 1;
     const pageSize = opts.pageSize ?? 30;
     const id = this.parsePlaylistId(playlistId);
-    if (!id || !this.baseUrl) return { tracks: [], total: 0, page, pageSize };
-    const data = await this.request("/playlist", { id });
-    const songs = data.data?.songlist ?? [];
-    return { tracks: songs.map(toTrack), total: songs.length, page, pageSize };
+    if (!id) return { tracks: [], total: 0, page, pageSize };
+    const response = await this.official("qq.playlist.tracks", {
+      playlistId: id,
+      offset: Math.max(0, (page - 1) * pageSize),
+      limit: pageSize
+    });
+    const data = asRecord(asRecord(response.req_1)?.data);
+    const songs = asArray(data?.songlist).map(toOfficialTrack).filter((item) => !!item);
+    songs.forEach((item) => this.tracks.set(item.id, item));
+    return { tracks: songs, total: Number(data?.total_song_num ?? songs.length), page, pageSize };
   }
   startWebLogin(message = "\u8BF7\u5728 QQ \u97F3\u4E50\u5B98\u65B9\u9875\u9762\u626B\u7801\u767B\u5F55\uFF1B\u684C\u9762\u7AEF\u4F1A\u81EA\u52A8\u5B89\u5168\u4FDD\u5B58\u8D26\u53F7\u4F1A\u8BDD") {
     return {
@@ -231,15 +245,31 @@ var QQMusicAccountConnector = class {
   parsePlaylistId(playlistId) {
     return playlistId.startsWith("qq-playlist:") ? playlistId.slice("qq-playlist:".length) : playlistId || null;
   }
-  async request(path, params = {}) {
-    const url = new URL(path, `${this.baseUrl}/`);
-    for (const [key, value] of Object.entries(params)) url.searchParams.set(key, String(value));
-    const response = await fetch(url.toString(), {
-      headers: { Accept: "application/json" },
-      signal: AbortSignal.timeout(15e3)
-    });
-    if (!response.ok) throw new Error(`QQ Music API failed: ${response.status} ${response.statusText}`);
-    return response.json();
+  async official(operation, params = {}) {
+    if (!this.cookie) throw new Error("QQ_MUSIC_LOGIN_REQUIRED");
+    if (!this.host?.officialProviderRequest) throw new Error("QQ_MUSIC_OFFICIAL_PROVIDER_UNAVAILABLE");
+    return this.host.officialProviderRequest(operation, params);
+  }
+  async refreshProfile() {
+    const response = await this.official("qq.account.profile");
+    const cookie = parseCookieHeader(this.cookie);
+    const uin = (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "").replace(/\D/g, "");
+    const baseMap = asRecord(asRecord(asRecord(response.req_2)?.data)?.map_userinfo);
+    const base = asRecord(baseMap?.[uin]);
+    const vipMap = asRecord(asRecord(asRecord(response.req_1)?.data)?.infoMap);
+    const vip = asRecord(vipMap?.[uin]);
+    const memberships = [];
+    if (Number(vip?.HugeVip)) memberships.push("\u8D85\u7EA7\u4F1A\u5458");
+    if (Number(vip?.iSuperVip)) memberships.push("\u8C6A\u534E\u7EFF\u94BB");
+    else if (Number(vip?.iVipFlag)) memberships.push("\u7EFF\u94BB");
+    if (Number(vip?.itwelve)) memberships.push("\u8C6A\u534E\u97F3\u4E50\u5305");
+    else if (Number(vip?.ieight)) memberships.push("\u97F3\u4E50\u5305");
+    this.profile = {
+      id: uin || void 0,
+      name: text(base?.nick) || void 0,
+      avatarUrl: httpsUrl(base?.headurl),
+      membershipLabel: memberships.join(" \xB7 ") || void 0
+    };
   }
 };
 var index_default = QQMusicAccountConnector;

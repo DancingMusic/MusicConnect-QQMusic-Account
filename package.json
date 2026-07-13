@@ -1,10 +1,7 @@
 {
   "name": "@dancingmusic/music-connect-qqmusic-account",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "QQ Music account connector for DancingMusic with host-owned official web cookie capture.",
-  "repository": { "type": "git", "url": "https://github.com/DancingMusic/MusicConnect-QQMusic-Account.git" },
-  "homepage": "https://dancingmusic.github.io/MusicConnect-QQMusic-Account/",
-  "bugs": { "url": "https://github.com/DancingMusic/MusicConnect-QQMusic-Account/issues" },
   "homepage": "https://dancingmusic.github.io/MusicConnect-QQMusic-Account/",
   "repository": {
     "type": "git",
