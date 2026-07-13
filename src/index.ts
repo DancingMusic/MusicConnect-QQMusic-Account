@@ -213,6 +213,13 @@ function toOfficialTrack(value: unknown): MusicTrack | null {
   };
 }
 
+function officialMediaMid(value: unknown): string {
+  const outer = asRecord(value);
+  const song = asRecord(outer?.songInfo) ?? outer;
+  const file = asRecord(song?.file);
+  return text(file?.media_mid ?? file?.mediaMid ?? song?.media_mid);
+}
+
 function toOfficialPlaylist(value: unknown): MusicPlaylist | null {
   const item = asRecord(value);
   if (!item) return null;
@@ -238,14 +245,15 @@ export class QQMusicAccountConnector implements MusicConnector {
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
     description: "QQ Music account login and catalog through the host-owned official provider adapter",
-    version: "0.2.0",
-    capabilities: ["search", "stream", "playlist", "login", "user-library", "recommendations"],
+    version: "0.2.1",
+    capabilities: ["search", "stream", "playlist", "login", "user-library"],
   };
 
   private cookie = "";
   private host: QQMusicAccountHost | null = null;
   private profile: { id?: string; name?: string; avatarUrl?: string; membershipLabel?: string } | null = null;
   private tracks = new Map<string, MusicTrack>();
+  private mediaMids = new Map<string, string>();
 
   async init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void> {
     const typed = config as QQMusicAccountConfig | undefined;
@@ -303,7 +311,13 @@ export class QQMusicAccountConnector implements MusicConnector {
     const data = asRecord(asRecord(response.req_1)?.data);
     const body = asRecord(data?.body);
     const song = asRecord(body?.song);
-    const list = asArray(song?.list).map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    const rawList = asArray(song?.list);
+    const list = rawList.map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    rawList.forEach(value => {
+      const track = toOfficialTrack(value);
+      const mediaMid = officialMediaMid(value);
+      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
+    });
     list.forEach(item => this.tracks.set(item.id, item));
     const meta = asRecord(data?.meta);
     return { tracks: list, total: Number(meta?.sum ?? list.length), page, pageSize };
@@ -316,12 +330,18 @@ export class QQMusicAccountConnector implements MusicConnector {
   async getStreamUrl(trackId: string): Promise<MusicStreamInfo | null> {
     const mid = this.parseTrackId(trackId);
     if (!mid) return null;
-    const response = await this.official<Record<string, unknown>>("qq.stream.resolve", { songmid: mid });
-    const data = asRecord(asRecord(response.req_1)?.data);
-    const midurlinfo = asArray(data?.midurlinfo).map(asRecord).find(Boolean);
+    const response = await this.official<Record<string, unknown>>("qq.stream.resolve", {
+      songmid: mid,
+      ...(this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {}),
+    });
+    const envelope = asRecord(response.req_0) ?? asRecord(response.req_1);
+    const data = asRecord(envelope?.data);
+    const midurlinfo = asArray(data?.midurlinfo).map(asRecord)
+      .find(item => typeof item?.purl === "string" && item.purl.length > 0);
     const purl = typeof midurlinfo?.purl === "string" ? midurlinfo.purl : "";
-    const sip = asArray(data?.sip).find(value => typeof value === "string") as string | undefined;
-    return purl && sip ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
+    const sip = asArray(data?.sip).find(value => typeof value === "string") as string | undefined
+      ?? "https://ws.stream.qqmusic.qq.com/";
+    return purl ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
   }
 
   async listPlaylists(query: MusicPlaylistQuery = {}): Promise<MusicPlaylistList> {
@@ -345,7 +365,13 @@ export class QQMusicAccountConnector implements MusicConnector {
       limit: pageSize,
     });
     const data = asRecord(asRecord(response.req_1)?.data);
-    const songs = asArray(data?.songlist).map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    const rawSongs = asArray(data?.songlist);
+    const songs = rawSongs.map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
+    rawSongs.forEach(value => {
+      const track = toOfficialTrack(value);
+      const mediaMid = officialMediaMid(value);
+      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
+    });
     songs.forEach(item => this.tracks.set(item.id, item));
     return { tracks: songs, total: Number(data?.total_song_num ?? songs.length), page, pageSize };
   }

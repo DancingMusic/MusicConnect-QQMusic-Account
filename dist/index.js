@@ -90,6 +90,12 @@ function toOfficialTrack(value) {
     updatedAt: ""
   };
 }
+function officialMediaMid(value) {
+  const outer = asRecord(value);
+  const song = asRecord(outer?.songInfo) ?? outer;
+  const file = asRecord(song?.file);
+  return text(file?.media_mid ?? file?.mediaMid ?? song?.media_mid);
+}
 function toOfficialPlaylist(value) {
   const item = asRecord(value);
   if (!item) return null;
@@ -115,13 +121,14 @@ var QQMusicAccountConnector = class {
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
       description: "QQ Music account login and catalog through the host-owned official provider adapter",
-      version: "0.2.0",
-      capabilities: ["search", "stream", "playlist", "login", "user-library", "recommendations"]
+      version: "0.2.1",
+      capabilities: ["search", "stream", "playlist", "login", "user-library"]
     };
     this.cookie = "";
     this.host = null;
     this.profile = null;
     this.tracks = /* @__PURE__ */ new Map();
+    this.mediaMids = /* @__PURE__ */ new Map();
   }
   async init(config, host) {
     const typed = config;
@@ -173,7 +180,13 @@ var QQMusicAccountConnector = class {
     const data = asRecord(asRecord(response.req_1)?.data);
     const body = asRecord(data?.body);
     const song = asRecord(body?.song);
-    const list = asArray(song?.list).map(toOfficialTrack).filter((item) => !!item);
+    const rawList = asArray(song?.list);
+    const list = rawList.map(toOfficialTrack).filter((item) => !!item);
+    rawList.forEach((value) => {
+      const track = toOfficialTrack(value);
+      const mediaMid = officialMediaMid(value);
+      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
+    });
     list.forEach((item) => this.tracks.set(item.id, item));
     const meta = asRecord(data?.meta);
     return { tracks: list, total: Number(meta?.sum ?? list.length), page, pageSize };
@@ -184,12 +197,16 @@ var QQMusicAccountConnector = class {
   async getStreamUrl(trackId) {
     const mid = this.parseTrackId(trackId);
     if (!mid) return null;
-    const response = await this.official("qq.stream.resolve", { songmid: mid });
-    const data = asRecord(asRecord(response.req_1)?.data);
-    const midurlinfo = asArray(data?.midurlinfo).map(asRecord).find(Boolean);
+    const response = await this.official("qq.stream.resolve", {
+      songmid: mid,
+      ...this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {}
+    });
+    const envelope = asRecord(response.req_0) ?? asRecord(response.req_1);
+    const data = asRecord(envelope?.data);
+    const midurlinfo = asArray(data?.midurlinfo).map(asRecord).find((item) => typeof item?.purl === "string" && item.purl.length > 0);
     const purl = typeof midurlinfo?.purl === "string" ? midurlinfo.purl : "";
-    const sip = asArray(data?.sip).find((value) => typeof value === "string");
-    return purl && sip ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
+    const sip = asArray(data?.sip).find((value) => typeof value === "string") ?? "https://ws.stream.qqmusic.qq.com/";
+    return purl ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
   }
   async listPlaylists(query = {}) {
     const page = query.page ?? 1;
@@ -211,7 +228,13 @@ var QQMusicAccountConnector = class {
       limit: pageSize
     });
     const data = asRecord(asRecord(response.req_1)?.data);
-    const songs = asArray(data?.songlist).map(toOfficialTrack).filter((item) => !!item);
+    const rawSongs = asArray(data?.songlist);
+    const songs = rawSongs.map(toOfficialTrack).filter((item) => !!item);
+    rawSongs.forEach((value) => {
+      const track = toOfficialTrack(value);
+      const mediaMid = officialMediaMid(value);
+      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
+    });
     songs.forEach((item) => this.tracks.set(item.id, item));
     return { tracks: songs, total: Number(data?.total_song_num ?? songs.length), page, pageSize };
   }
