@@ -3,7 +3,7 @@
 - Spec-ID: `qq-music-account-connector`
 - Version: `1.0.0`
 - Status: `Active`
-- Last-Updated: `2026-07-12`
+- Last-Updated: `2026-07-13`
 
 ## Scope
 
@@ -20,6 +20,9 @@
 
 账号 Cookie 仅由宿主官方域代理使用，不进入第三方网关、连接器配置或 URL。
 首版不承诺会员解锁；不可播放的版权内容允许返回空播放地址。
+
+播放地址解析 MUST 将曲目 `file.media_mid` 传给宿主，允许宿主按无损到 AAC
+构造多个官方 vkey 文件名候选；连接器 MUST 跳过空 `purl` 并选择第一个可播结果。
 
 ## Connector Identity
 

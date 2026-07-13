@@ -14,7 +14,7 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.2.0",
+      version: "0.2.1",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "playlist", "login"]));
     expect(connector.meta.configSchema).toBeUndefined();
@@ -129,5 +129,31 @@ describe("QQMusicAccountConnector", () => {
     await connector.search({ keyword: "周杰伦" });
     expect(officialProviderRequest).toHaveBeenLastCalledWith("qq.catalog.search", { query: "周杰伦", page: 1, pageSize: 30 });
     expect(JSON.stringify(officialProviderRequest.mock.calls)).not.toContain("account-session-secret");
+  });
+
+  it("passes media_mid and falls back to the first playable quality", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.catalog.search") return {
+        req_1: { data: { body: { song: { list: [{ mid: "001abc", name: "测试歌", file: { media_mid: "media001" } }] } } } },
+      };
+      if (operation === "qq.stream.resolve") {
+        expect(params).toEqual({ songmid: "001abc", mediaMid: "media001" });
+        return {
+          req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [
+            { filename: "F000media001.flac", purl: "" },
+            { filename: "M500media001.mp3", purl: "M500media001.mp3?vkey=ok" },
+          ] } },
+        };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.search({ keyword: "测试" });
+    await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toEqual({
+      url: "https://stream.qqmusic.qq.com/M500media001.mp3?vkey=ok",
+      format: "mp3",
+    });
   });
 });

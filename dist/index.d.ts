@@ -21,6 +21,7 @@ declare class QQMusicAccountConnector implements MusicConnector {
     private host;
     private profile;
     private tracks;
+    private mediaMids;
     init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void>;
     login(request?: MusicConnectorLoginRequest): Promise<MusicConnectorLoginResult>;
     search(query: MusicListQuery): Promise<MusicSearchResult>;
