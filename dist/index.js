@@ -67,6 +67,39 @@ function httpsUrl(value) {
   if (raw.startsWith("//")) return `https:${raw}`;
   return raw.replace(/^http:\/\//i, "https://");
 }
+function trackAccess(song) {
+  const pay = asRecord(song.pay);
+  const action = asRecord(song.action);
+  const file = asRecord(song.file);
+  const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
+  const tryBegin = Number(song.try_begin ?? song.trybegin ?? pay?.time_free ?? 0);
+  const tryEnd = Number(song.try_end ?? song.tryend ?? 0);
+  const hasPreview = Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin);
+  const explicitlyDisabled = Number(song.disabled ?? 0) > 0 || action && Object.prototype.hasOwnProperty.call(action, "play") && Number(action.play) === 0 && !requiresMembership;
+  const audioSizeKeys = [
+    "size_128mp3",
+    "size_320mp3",
+    "size_192aac",
+    "size_96aac",
+    "size_flac",
+    "size_hires"
+  ];
+  const hasAudioSizeMetadata = !!file && audioSizeKeys.some((key) => Object.prototype.hasOwnProperty.call(file, key));
+  const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some((key) => Number(file[key] ?? 0) > 0);
+  if (hasPreview) return { availability: "preview", label: "\u8BD5\u542C", reason: "\u5F53\u524D\u6B4C\u66F2\u4EC5\u63D0\u4F9B\u8BD5\u542C\u7247\u6BB5" };
+  if (requiresMembership) {
+    return {
+      availability: "membership-required",
+      requiredMembership: "VIP",
+      label: "VIP",
+      reason: "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650"
+    };
+  }
+  if (explicitlyDisabled || !hasAnyAudioFile) {
+    return { availability: "copyright-restricted", label: "\u65E0\u7248\u6743", reason: "\u5F53\u524D\u6B4C\u66F2\u53D7\u7248\u6743\u9650\u5236\uFF0C\u6682\u65E0\u5B8C\u6574\u97F3\u6E90" };
+  }
+  return { availability: "playable" };
+}
 function toOfficialTrack(value) {
   const outer = asRecord(value);
   const song = asRecord(outer?.songInfo) ?? outer;
@@ -87,7 +120,8 @@ function toOfficialTrack(value) {
     currency: "CNY",
     version: "1.0.0",
     createdAt: "",
-    updatedAt: ""
+    updatedAt: "",
+    access: trackAccess(song)
   };
 }
 function officialMediaMid(value) {
@@ -99,15 +133,16 @@ function officialMediaMid(value) {
 function toOfficialPlaylist(value) {
   const item = asRecord(value);
   if (!item) return null;
-  const id = text(item.tid ?? item.dirid ?? item.dissid ?? item.id);
+  const creator = asRecord(item.creator);
+  const id = text(item.tid ?? item.dirid ?? item.dissid ?? item.id ?? item.content_id);
   if (!id) return null;
   return {
     id: `qq-playlist:${id}`,
-    name: text(item.dirName ?? item.diss_name ?? item.dissname ?? item.name) || "QQ \u97F3\u4E50\u6B4C\u5355",
+    name: text(item.dirName ?? item.diss_name ?? item.dissname ?? item.name ?? item.title) || "QQ \u97F3\u4E50\u6B4C\u5355",
     description: text(item.desc ?? item.description) || void 0,
-    coverUrl: httpsUrl(item.picUrl ?? item.bigpicUrl ?? item.picurl ?? item.cover_url_big ?? item.coverUrl),
-    trackCount: Number(item.song_cnt ?? item.song_count ?? item.songNum ?? 0) || void 0,
-    curator: text(item.creator?.toString()) || void 0,
+    coverUrl: httpsUrl(item.picUrl ?? item.bigpicUrl ?? item.picurl ?? item.cover_url_big ?? item.coverUrl ?? item.cover),
+    trackCount: Number(item.song_cnt ?? item.song_count ?? item.song_num ?? item.songNum ?? 0) || void 0,
+    curator: text(creator?.name ?? creator?.nick ?? creator?.nickname ?? item.creator) || void 0,
     externalUrl: `https://y.qq.com/n/ryqq/playlist/${id}`
   };
 }
@@ -121,8 +156,8 @@ var QQMusicAccountConnector = class {
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
       description: "QQ Music account login and catalog through the host-owned official provider adapter",
-      version: "0.2.1",
-      capabilities: ["search", "stream", "playlist", "login", "user-library"]
+      version: "0.3.0",
+      capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"]
     };
     this.cookie = "";
     this.host = null;
@@ -139,8 +174,14 @@ var QQMusicAccountConnector = class {
   async login(request = { intent: "status" }) {
     const intent = request.intent ?? "status";
     if (intent === "status") {
-      if (this.cookie && this.host?.officialProviderRequest) await this.refreshProfile().catch(() => void 0);
-      return this.cookie ? { status: "authenticated", user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : void 0, membership: this.profile?.membershipLabel ? { label: this.profile.membershipLabel } : void 0, message: "QQ \u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u53EF\u7528" } : { status: "anonymous", message: "\u672A\u767B\u5F55 QQ \u97F3\u4E50" };
+      if (this.cookie && this.host?.officialProviderRequest) {
+        try {
+          await this.refreshProfile();
+        } catch {
+          return { status: "expired", message: "QQ \u97F3\u4E50\u767B\u5F55\u4F1A\u8BDD\u5DF2\u5931\u6548\uFF0C\u8BF7\u91CD\u65B0\u626B\u7801\u767B\u5F55" };
+        }
+      }
+      return this.cookie ? { status: "authenticated", user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : void 0, membership: this.profile?.membership, message: "QQ \u97F3\u4E50\u8D26\u53F7\u4F1A\u8BDD\u53EF\u7528" } : { status: "anonymous", message: "\u672A\u767B\u5F55 QQ \u97F3\u4E50" };
     }
     if (intent === "logout") {
       this.cookie = "";
@@ -161,11 +202,18 @@ var QQMusicAccountConnector = class {
         return { status: "error", message: "\u672A\u8BFB\u53D6\u5230\u6709\u6548 QQ \u97F3\u4E50\u4F1A\u8BDD Cookie" };
       }
       this.cookie = submittedCookie;
-      await this.refreshProfile().catch(() => void 0);
+      if (this.host?.officialProviderRequest) {
+        try {
+          await this.refreshProfile();
+        } catch {
+          this.cookie = "";
+          return { status: "error", message: "QQ \u97F3\u4E50\u4F1A\u8BDD\u6821\u9A8C\u5931\u8D25\uFF0C\u8BF7\u91CD\u65B0\u626B\u7801\u767B\u5F55" };
+        }
+      }
       return {
         status: "authenticated",
         user: this.profile ? { id: this.profile.id, name: this.profile.name, avatarUrl: this.profile.avatarUrl } : void 0,
-        ...this.profile?.membershipLabel ? { membership: { label: this.profile.membershipLabel } } : {},
+        ...this.profile?.membership ? { membership: this.profile.membership } : {},
         message: qqCookieHasPlaybackLogin(submittedCookie) ? "QQ \u97F3\u4E50\u767B\u5F55\u6210\u529F" : "QQ \u97F3\u4E50\u767B\u5F55\u6210\u529F\uFF1B\u5982\u90E8\u5206\u6B4C\u66F2\u65E0\u6CD5\u64AD\u653E\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55\u4EE5\u8865\u5168\u64AD\u653E\u4F1A\u8BDD"
       };
     }
@@ -197,9 +245,17 @@ var QQMusicAccountConnector = class {
   async getStreamUrl(trackId) {
     const mid = this.parseTrackId(trackId);
     if (!mid) return null;
+    const track = this.tracks.get(trackId);
+    const access = track?.access;
+    if (access?.availability === "copyright-restricted" || access?.availability === "region-restricted") return null;
+    if (access?.availability === "membership-required" && !this.profile?.membership?.active) {
+      throw new Error("QQ_MUSIC_MEMBERSHIP_REQUIRED");
+    }
     const response = await this.official("qq.stream.resolve", {
       songmid: mid,
-      ...this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {}
+      ...this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {},
+      requiresMembership: access?.availability === "membership-required",
+      membershipActive: this.profile?.membership?.active === true
     });
     const envelope = asRecord(response.req_0) ?? asRecord(response.req_1);
     const data = asRecord(envelope?.data);
@@ -208,9 +264,24 @@ var QQMusicAccountConnector = class {
     const sip = asArray(data?.sip).find((value) => typeof value === "string") ?? "https://ws.stream.qqmusic.qq.com/";
     return purl ? { url: new URL(purl, sip).toString(), format: purl.split(".").pop()?.split("?")[0] || "m4a" } : null;
   }
+  async getLyrics(trackId) {
+    const mid = this.parseTrackId(trackId);
+    if (!mid) return null;
+    const response = await this.official("qq.track.lyrics", { songmid: mid });
+    const data = asRecord(asRecord(response.req_1)?.data) ?? asRecord(response.data) ?? response;
+    const lyric = decodeProviderText(data.lyric);
+    const translated = decodeProviderText(data.trans ?? data.translated);
+    return lyric ? { text: lyric, ...translated ? { translated } : {} } : null;
+  }
   async listPlaylists(query = {}) {
     const page = query.page ?? 1;
     const pageSize = query.pageSize ?? 30;
+    if (query.category === "recommendations") {
+      const response2 = await this.official("qq.recommend.playlists", { page, pageSize });
+      const data2 = asRecord(asRecord(response2.req_1)?.data);
+      const items = asArray(data2?.v_playlist).map(toOfficialPlaylist).filter((item) => !!item);
+      return { playlists: items, total: Number(data2?.total ?? items.length), page, pageSize };
+    }
     const response = await this.official("qq.account.playlists");
     const data = asRecord(asRecord(response.req_1)?.data);
     const all = asArray(data?.v_playlist).map(toOfficialPlaylist).filter((item) => !!item);
@@ -282,19 +353,49 @@ var QQMusicAccountConnector = class {
     const vipMap = asRecord(asRecord(asRecord(response.req_1)?.data)?.infoMap);
     const vip = asRecord(vipMap?.[uin]);
     const memberships = [];
-    if (Number(vip?.HugeVip)) memberships.push("\u8D85\u7EA7\u4F1A\u5458");
-    if (Number(vip?.iSuperVip)) memberships.push("\u8C6A\u534E\u7EFF\u94BB");
-    else if (Number(vip?.iVipFlag)) memberships.push("\u7EFF\u94BB");
-    if (Number(vip?.itwelve)) memberships.push("\u8C6A\u534E\u97F3\u4E50\u5305");
-    else if (Number(vip?.ieight)) memberships.push("\u97F3\u4E50\u5305");
+    let tier;
+    if (Number(vip?.HugeVip)) {
+      memberships.push("\u8D85\u7EA7\u4F1A\u5458");
+      tier = "SVIP";
+    }
+    if (Number(vip?.iSuperVip)) {
+      memberships.push("\u8C6A\u534E\u7EFF\u94BB");
+      tier ?? (tier = "VIP");
+    } else if (Number(vip?.iVipFlag)) {
+      memberships.push("\u7EFF\u94BB");
+      tier ?? (tier = "VIP");
+    }
+    if (Number(vip?.itwelve)) {
+      memberships.push("\u8C6A\u534E\u97F3\u4E50\u5305");
+      tier ?? (tier = "VIP");
+    } else if (Number(vip?.ieight)) {
+      memberships.push("\u97F3\u4E50\u5305");
+      tier ?? (tier = "VIP");
+    }
     this.profile = {
       id: uin || void 0,
       name: text(base?.nick) || void 0,
       avatarUrl: httpsUrl(base?.headurl),
-      membershipLabel: memberships.join(" \xB7 ") || void 0
+      membership: {
+        active: memberships.length > 0,
+        label: memberships.join(" \xB7 ") || "\u666E\u901A\u8D26\u53F7",
+        tier
+      }
     };
   }
 };
+function decodeProviderText(value) {
+  const raw = text(value).trim();
+  if (!raw) return "";
+  if (raw.includes("[00:") || raw.includes("[ti:")) return raw;
+  try {
+    const binary = globalThis.atob(raw);
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return new TextDecoder("utf-8").decode(bytes).trim();
+  } catch {
+    return "";
+  }
+}
 var index_default = QQMusicAccountConnector;
 export {
   QQMusicAccountConnector,

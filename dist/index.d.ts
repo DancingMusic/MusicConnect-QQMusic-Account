@@ -1,4 +1,4 @@
-import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicPlaylistQuery, MusicPlaylistList } from '@dancingmusic/music-connect';
+import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicLyrics, MusicPlaylistQuery, MusicPlaylistList } from '@dancingmusic/music-connect';
 
 /**
  * QQ Music account connector for DancingMusic.
@@ -27,6 +27,7 @@ declare class QQMusicAccountConnector implements MusicConnector {
     search(query: MusicListQuery): Promise<MusicSearchResult>;
     getTrack(trackId: string): Promise<MusicTrack | null>;
     getStreamUrl(trackId: string): Promise<MusicStreamInfo | null>;
+    getLyrics(trackId: string): Promise<MusicLyrics | null>;
     listPlaylists(query?: MusicPlaylistQuery): Promise<MusicPlaylistList>;
     getPlaylistTracks(playlistId: string, opts?: {
         page?: number;

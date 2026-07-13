@@ -1,9 +1,9 @@
 # OpenSpec: QQ Music Account Connector
 
 - Spec-ID: `qq-music-account-connector`
-- Version: `1.0.0`
+- Version: `1.1.0`
 - Status: `Active`
-- Last-Updated: `2026-07-13`
+- Last-Updated: `2026-07-14`
 
 ## Scope
 
@@ -17,12 +17,20 @@
 - 登录状态、继续、取消和退出意图
 - 扫码后通过宿主受控代理访问 QQ 官方域曲库接口
 - 无需用户填写 Base URL 的搜索、歌曲、播放地址和账号歌单
+- 结构化会员状态、歌曲会员/版权/地区可用性标识
+- QQ 官方歌词与翻译歌词
+- 保留受限歌曲的分页歌单详情
 
 账号 Cookie 仅由宿主官方域代理使用，不进入第三方网关、连接器配置或 URL。
-首版不承诺会员解锁；不可播放的版权内容允许返回空播放地址。
+连接器不承诺绕过平台权限，但 MUST 使用宿主返回的真实会员状态和当前登录会话
+请求会员可用的官方播放地址。不可播放歌曲 MUST 保留在列表中，并通过 access
+元数据说明会员、版权、地区或未知限制，不得在目录映射阶段直接过滤。
 
 播放地址解析 MUST 将曲目 `file.media_mid` 传给宿主，允许宿主按无损到 AAC
 构造多个官方 vkey 文件名候选；连接器 MUST 跳过空 `purl` 并选择第一个可播结果。
+会员曲目解析失败时，错误必须区分登录会话过期、会员权限不足和平台未返回播放地址。
+歌词通过宿主审核的 `qq.track.lyrics` 操作读取，连接器负责解码并返回 MusicConnect
+标准 `MusicLyrics`，不得把 Cookie 或原始响应泄露给 UI。
 
 ## Connector Identity
 
@@ -33,7 +41,7 @@
 - `variant: account`
 - `authRequirement: required`
 - `supportedHosts: [desktop]`
-- capabilities: `search`, `stream`, `playlist`, `login`
+- capabilities: `search`, `stream`, `lyrics`, `playlist`, `login`, `user-library`
 
 ## Login Flow
 

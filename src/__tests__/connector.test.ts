@@ -14,9 +14,9 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.2.1",
+      version: "0.3.0",
     });
-    expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "playlist", "login"]));
+    expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login", "recommendations"]));
     expect(connector.meta.configSchema).toBeUndefined();
   });
 
@@ -100,7 +100,7 @@ describe("QQMusicAccountConnector", () => {
     await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     const status = await connector.login({ intent: "status" });
     expect(status.user).toEqual({ id: "123456", name: "Dancing QQ", avatarUrl: "https://qlogo.cn/avatar.jpg" });
-    expect(JSON.stringify(status)).toContain("豪华绿钻");
+    expect(status.membership).toEqual(expect.objectContaining({ active: true, tier: "VIP", label: "豪华绿钻" }));
   });
 
   it("maps account playlists and their tracks without apiBaseUrl", async () => {
@@ -138,7 +138,12 @@ describe("QQMusicAccountConnector", () => {
         req_1: { data: { body: { song: { list: [{ mid: "001abc", name: "测试歌", file: { media_mid: "media001" } }] } } } },
       };
       if (operation === "qq.stream.resolve") {
-        expect(params).toEqual({ songmid: "001abc", mediaMid: "media001" });
+        expect(params).toEqual({
+          songmid: "001abc",
+          mediaMid: "media001",
+          requiresMembership: false,
+          membershipActive: false,
+        });
         return {
           req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [
             { filename: "F000media001.flac", purl: "" },
@@ -154,6 +159,77 @@ describe("QQMusicAccountConnector", () => {
     await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toEqual({
       url: "https://stream.qqmusic.qq.com/M500media001.mp3?vkey=ok",
       format: "mp3",
+    });
+  });
+
+  it("labels VIP tracks and blocks them for a non-member account", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return { req_1: { data: { infoMap: { "123456": {} } } }, req_2: { data: {} } };
+      if (operation === "qq.catalog.search") return {
+        req_1: { data: { body: { song: { list: [{ mid: "vip001", name: "会员歌曲", pay: { pay_play: 1 }, file: { media_mid: "vip-media" } }] } } } },
+      };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.search({ keyword: "会员歌曲" });
+    expect(result.tracks[0]).toMatchObject({
+      access: { availability: "membership-required", requiredMembership: "VIP", label: "VIP" },
+    });
+    await expect(connector.getStreamUrl(result.tracks[0].id)).rejects.toThrow("QQ_MUSIC_MEMBERSHIP_REQUIRED");
+    expect(officialProviderRequest).not.toHaveBeenCalledWith("qq.stream.resolve", expect.anything());
+  });
+
+  it("passes active VIP permission into stream resolution", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return {
+        req_1: { data: { infoMap: { "123456": { iSuperVip: 1 } } } }, req_2: { data: {} },
+      };
+      if (operation === "qq.catalog.search") return {
+        req_1: { data: { body: { song: { list: [{ mid: "vip001", name: "会员歌曲", pay: { pay_play: 1 }, file: { media_mid: "vip-media" } }] } } } },
+      };
+      if (operation === "qq.stream.resolve") {
+        expect(params).toMatchObject({ requiresMembership: true, membershipActive: true });
+        return { req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [{ purl: "F000vip.flac?vkey=ok" }] } } };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.search({ keyword: "会员歌曲" });
+    await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toMatchObject({ format: "flac" });
+  });
+
+  it("loads and decodes lyrics through the reviewed host operation", async () => {
+    const encoded = Buffer.from("[00:01.00]第一句\n[00:02.00]第二句", "utf8").toString("base64");
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.track.lyrics") {
+        expect(params).toEqual({ songmid: "001abc" });
+        return { req_1: { data: { lyric: encoded } } };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    await expect(connector.getLyrics!("qq:001abc")).resolves.toEqual({ text: "[00:01.00]第一句\n[00:02.00]第二句" });
+  });
+
+  it("loads paged recommendations separately from account playlists", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.recommend.playlists") {
+        expect(params).toEqual({ page: 2, pageSize: 12 });
+        return { req_1: { data: { total: 40, v_playlist: [{ content_id: "8899", title: "今日推荐", cover: "http://y.gtimg.cn/reco.jpg", song_num: 30 }] } } };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    await expect(connector.listPlaylists!({ category: "recommendations", page: 2, pageSize: 12 })).resolves.toMatchObject({
+      total: 40,
+      page: 2,
+      playlists: [{ id: "qq-playlist:8899", name: "今日推荐", trackCount: 30 }],
     });
   });
 });
