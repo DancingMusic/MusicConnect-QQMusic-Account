@@ -35,17 +35,22 @@ function parseCookieHeader(cookieText) {
   }
   return result;
 }
+function normalizeAccountId(value) {
+  return text(value).replace(/\D/g, "");
+}
+function resolveQqAccountId(cookie) {
+  const rawUin = Number(cookie.login_type) === 2 ? cookie.wxuin || cookie.uin || cookie.p_uin || "" : cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "";
+  return normalizeAccountId(rawUin);
+}
 function qqCookieHasLogin(cookieText) {
   const cookie = parseCookieHeader(cookieText);
-  const rawUin = Number(cookie.login_type) === 2 ? cookie.wxuin || cookie.uin || cookie.p_uin || "" : cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "";
-  const uin = rawUin.replace(/\D/g, "");
+  const uin = resolveQqAccountId(cookie);
   const musicKey = cookie.qm_keyst || cookie.qqmusic_key || cookie.music_key || cookie.p_skey || cookie.skey || cookie.psrf_qqaccess_token || cookie.psrf_qqrefresh_token || cookie.wxrefresh_token || cookie.wxskey || "";
   return Boolean(uin && musicKey);
 }
 function qqCookieHasPlaybackLogin(cookieText) {
   const cookie = parseCookieHeader(cookieText);
-  const rawUin = Number(cookie.login_type) === 2 ? cookie.wxuin || cookie.uin || cookie.p_uin || "" : cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "";
-  const uin = rawUin.replace(/\D/g, "");
+  const uin = resolveQqAccountId(cookie);
   const playbackKey = cookie.qm_keyst || cookie.qqmusic_key || cookie.music_key || cookie.wxskey || "";
   return Boolean(uin && playbackKey);
 }
@@ -69,13 +74,13 @@ function httpsUrl(value) {
 }
 function trackAccess(song) {
   const pay = asRecord(song.pay);
-  const action = asRecord(song.action);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
-  const tryBegin = Number(song.try_begin ?? song.trybegin ?? pay?.time_free ?? 0);
-  const tryEnd = Number(song.try_end ?? song.tryend ?? 0);
-  const hasPreview = Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin);
-  const explicitlyDisabled = Number(song.disabled ?? 0) > 0 || action && Object.prototype.hasOwnProperty.call(action, "play") && Number(action.play) === 0 && !requiresMembership;
+  const tryBegin = Number(file?.try_begin ?? file?.trybegin ?? 0);
+  const tryEnd = Number(file?.try_end ?? file?.tryend ?? 0);
+  const trySize = Number(file?.size_try ?? file?.sizeTry ?? 0);
+  const hasPreview = Number.isFinite(trySize) && trySize > 0 || Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin);
+  const explicitlyDisabled = Number(song.disabled ?? 0) > 0;
   const audioSizeKeys = [
     "size_128mp3",
     "size_320mp3",
@@ -86,7 +91,6 @@ function trackAccess(song) {
   ];
   const hasAudioSizeMetadata = !!file && audioSizeKeys.some((key) => Object.prototype.hasOwnProperty.call(file, key));
   const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some((key) => Number(file[key] ?? 0) > 0);
-  if (hasPreview) return { availability: "preview", label: "\u8BD5\u542C", reason: "\u5F53\u524D\u6B4C\u66F2\u4EC5\u63D0\u4F9B\u8BD5\u542C\u7247\u6BB5" };
   if (requiresMembership) {
     return {
       availability: "membership-required",
@@ -95,10 +99,80 @@ function trackAccess(song) {
       reason: "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650"
     };
   }
+  if (hasPreview) return { availability: "preview", label: "\u8BD5\u542C", reason: "\u5F53\u524D\u6B4C\u66F2\u4EC5\u63D0\u4F9B\u8BD5\u542C\u7247\u6BB5" };
   if (explicitlyDisabled || !hasAnyAudioFile) {
-    return { availability: "copyright-restricted", label: "\u65E0\u7248\u6743", reason: "\u5F53\u524D\u6B4C\u66F2\u53D7\u7248\u6743\u9650\u5236\uFF0C\u6682\u65E0\u5B8C\u6574\u97F3\u6E90" };
+    return { availability: "unavailable", label: "\u4E0D\u53EF\u7528", reason: "QQ \u97F3\u4E50\u672A\u8FD4\u56DE\u53EF\u7528\u7684\u5B8C\u6574\u97F3\u9891\u6587\u4EF6" };
   }
   return { availability: "playable" };
+}
+function findAccountRecord(data, accountId, mapKeys, listKeys) {
+  if (!data || !accountId) return void 0;
+  for (const key of mapKeys) {
+    const map = asRecord(data[key]);
+    const direct = asRecord(map?.[accountId]);
+    if (direct) return direct;
+    if (!map) continue;
+    for (const [mapAccountId, value] of Object.entries(map)) {
+      if (normalizeAccountId(mapAccountId) === accountId) {
+        const record = asRecord(value);
+        if (record) return record;
+      }
+    }
+  }
+  for (const key of listKeys) {
+    for (const value of asArray(data[key])) {
+      const record = asRecord(value);
+      if (!record) continue;
+      const recordId = normalizeAccountId(record.uin ?? record.qqmusic_uin ?? record.wxuin ?? record.id);
+      if (recordId === accountId) return record;
+    }
+  }
+  return void 0;
+}
+var MEMBERSHIP_FLAG_KEYS = [
+  "HugeVip",
+  "hugeVip",
+  "iSuperVip",
+  "isSuperVip",
+  "superVip",
+  "iVipFlag",
+  "vipFlag",
+  "itwelve",
+  "iTwelve",
+  "ieight",
+  "iEight"
+];
+function accountMembership(value) {
+  if (!value) return void 0;
+  const sources = [value, asRecord(value.mVip), asRecord(value.vipInfo)].filter(Boolean);
+  const hasKnownStatus = sources.some((source) => MEMBERSHIP_FLAG_KEYS.some((key) => Object.prototype.hasOwnProperty.call(source, key)));
+  if (!hasKnownStatus) return void 0;
+  const enabled = (...keys) => sources.some((source) => keys.some((key) => Number(source[key] ?? 0) > 0));
+  const labels = [];
+  let tier;
+  if (enabled("HugeVip", "hugeVip")) {
+    labels.push("\u8D85\u7EA7\u4F1A\u5458");
+    tier = "SVIP";
+  }
+  if (enabled("iSuperVip", "isSuperVip", "superVip")) {
+    labels.push("\u8C6A\u534E\u7EFF\u94BB");
+    tier ?? (tier = "VIP");
+  } else if (enabled("iVipFlag", "vipFlag")) {
+    labels.push("\u7EFF\u94BB");
+    tier ?? (tier = "VIP");
+  }
+  if (enabled("itwelve", "iTwelve")) {
+    labels.push("\u8C6A\u534E\u97F3\u4E50\u5305");
+    tier ?? (tier = "VIP");
+  } else if (enabled("ieight", "iEight")) {
+    labels.push("\u97F3\u4E50\u5305");
+    tier ?? (tier = "VIP");
+  }
+  return {
+    active: labels.length > 0,
+    label: labels.join(" \xB7 ") || "\u666E\u901A\u8D26\u53F7",
+    tier
+  };
 }
 function toOfficialTrack(value) {
   const outer = asRecord(value);
@@ -156,7 +230,7 @@ var QQMusicAccountConnector = class {
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
       description: "QQ Music account login and catalog through the host-owned official provider adapter",
-      version: "0.3.0",
+      version: "0.3.1",
       capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"]
     };
     this.cookie = "";
@@ -247,8 +321,8 @@ var QQMusicAccountConnector = class {
     if (!mid) return null;
     const track = this.tracks.get(trackId);
     const access = track?.access;
-    if (access?.availability === "copyright-restricted" || access?.availability === "region-restricted") return null;
-    if (access?.availability === "membership-required" && !this.profile?.membership?.active) {
+    if (access?.availability === "copyright-restricted" || access?.availability === "region-restricted" || access?.availability === "unavailable") return null;
+    if (access?.availability === "membership-required" && this.profile?.membership?.active === false) {
       throw new Error("QQ_MUSIC_MEMBERSHIP_REQUIRED");
     }
     const response = await this.official("qq.stream.resolve", {
@@ -347,40 +421,19 @@ var QQMusicAccountConnector = class {
   async refreshProfile() {
     const response = await this.official("qq.account.profile");
     const cookie = parseCookieHeader(this.cookie);
-    const uin = (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "").replace(/\D/g, "");
-    const baseMap = asRecord(asRecord(asRecord(response.req_2)?.data)?.map_userinfo);
-    const base = asRecord(baseMap?.[uin]);
-    const vipMap = asRecord(asRecord(asRecord(response.req_1)?.data)?.infoMap);
-    const vip = asRecord(vipMap?.[uin]);
-    const memberships = [];
-    let tier;
-    if (Number(vip?.HugeVip)) {
-      memberships.push("\u8D85\u7EA7\u4F1A\u5458");
-      tier = "SVIP";
-    }
-    if (Number(vip?.iSuperVip)) {
-      memberships.push("\u8C6A\u534E\u7EFF\u94BB");
-      tier ?? (tier = "VIP");
-    } else if (Number(vip?.iVipFlag)) {
-      memberships.push("\u7EFF\u94BB");
-      tier ?? (tier = "VIP");
-    }
-    if (Number(vip?.itwelve)) {
-      memberships.push("\u8C6A\u534E\u97F3\u4E50\u5305");
-      tier ?? (tier = "VIP");
-    } else if (Number(vip?.ieight)) {
-      memberships.push("\u97F3\u4E50\u5305");
-      tier ?? (tier = "VIP");
-    }
+    const uin = resolveQqAccountId(cookie);
+    const baseData = asRecord(asRecord(response.req_2)?.data);
+    const base = findAccountRecord(baseData, uin, ["map_userinfo", "map_user_info", "userInfoMap"], ["vec_userinfo", "user_list"]);
+    const vipData = asRecord(asRecord(response.req_1)?.data);
+    const vip = findAccountRecord(vipData, uin, ["infoMap", "info_map", "vipInfoMap"], ["infoList", "vip_info_list"]);
+    const membership = accountMembership(vip);
+    const isWeChatLogin = Number(cookie.login_type) === 2;
+    const avatarUrl = httpsUrl(base?.headurl ?? base?.head_url ?? base?.avatarUrl ?? base?.avatar) ?? (!isWeChatLogin && uin ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(uin)}&s=640` : void 0);
     this.profile = {
       id: uin || void 0,
-      name: text(base?.nick) || void 0,
-      avatarUrl: httpsUrl(base?.headurl),
-      membership: {
-        active: memberships.length > 0,
-        label: memberships.join(" \xB7 ") || "\u666E\u901A\u8D26\u53F7",
-        tier
-      }
+      name: text(base?.nick ?? base?.nickname ?? base?.name) || void 0,
+      avatarUrl,
+      membership
     };
   }
 };

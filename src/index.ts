@@ -95,12 +95,20 @@ function parseCookieHeader(cookieText: string): Record<string, string> {
   return result;
 }
 
-function qqCookieHasLogin(cookieText: string): boolean {
-  const cookie = parseCookieHeader(cookieText);
+function normalizeAccountId(value: unknown): string {
+  return text(value).replace(/\D/g, "");
+}
+
+function resolveQqAccountId(cookie: Record<string, string>): string {
   const rawUin = Number(cookie.login_type) === 2
     ? (cookie.wxuin || cookie.uin || cookie.p_uin || "")
     : (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "");
-  const uin = rawUin.replace(/\D/g, "");
+  return normalizeAccountId(rawUin);
+}
+
+function qqCookieHasLogin(cookieText: string): boolean {
+  const cookie = parseCookieHeader(cookieText);
+  const uin = resolveQqAccountId(cookie);
   const musicKey = cookie.qm_keyst || cookie.qqmusic_key || cookie.music_key || cookie.p_skey || cookie.skey
     || cookie.psrf_qqaccess_token || cookie.psrf_qqrefresh_token || cookie.wxrefresh_token || cookie.wxskey || "";
   return Boolean(uin && musicKey);
@@ -108,10 +116,7 @@ function qqCookieHasLogin(cookieText: string): boolean {
 
 function qqCookieHasPlaybackLogin(cookieText: string): boolean {
   const cookie = parseCookieHeader(cookieText);
-  const rawUin = Number(cookie.login_type) === 2
-    ? (cookie.wxuin || cookie.uin || cookie.p_uin || "")
-    : (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "");
-  const uin = rawUin.replace(/\D/g, "");
+  const uin = resolveQqAccountId(cookie);
   const playbackKey = cookie.qm_keyst || cookie.qqmusic_key || cookie.music_key || cookie.wxskey || "";
   return Boolean(uin && playbackKey);
 }
@@ -207,21 +212,20 @@ function httpsUrl(value: unknown): string | undefined {
 
 function trackAccess(song: Record<string, unknown>): TrackAccess {
   const pay = asRecord(song.pay);
-  const action = asRecord(song.action);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
-  const tryBegin = Number(song.try_begin ?? song.trybegin ?? pay?.time_free ?? 0);
-  const tryEnd = Number(song.try_end ?? song.tryend ?? 0);
-  const hasPreview = Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin);
-  const explicitlyDisabled = Number(song.disabled ?? 0) > 0
-    || (action && Object.prototype.hasOwnProperty.call(action, "play") && Number(action.play) === 0 && !requiresMembership);
+  const tryBegin = Number(file?.try_begin ?? file?.trybegin ?? 0);
+  const tryEnd = Number(file?.try_end ?? file?.tryend ?? 0);
+  const trySize = Number(file?.size_try ?? file?.sizeTry ?? 0);
+  const hasPreview = (Number.isFinite(trySize) && trySize > 0)
+    || (Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin));
+  const explicitlyDisabled = Number(song.disabled ?? 0) > 0;
   const audioSizeKeys = [
     "size_128mp3", "size_320mp3", "size_192aac", "size_96aac", "size_flac", "size_hires",
   ];
   const hasAudioSizeMetadata = !!file && audioSizeKeys.some(key => Object.prototype.hasOwnProperty.call(file, key));
   const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some(key => Number(file[key] ?? 0) > 0);
 
-  if (hasPreview) return { availability: "preview", label: "试听", reason: "当前歌曲仅提供试听片段" };
   if (requiresMembership) {
     return {
       availability: "membership-required",
@@ -230,10 +234,67 @@ function trackAccess(song: Record<string, unknown>): TrackAccess {
       reason: "需要有效的 QQ 音乐会员权限",
     };
   }
+  if (hasPreview) return { availability: "preview", label: "试听", reason: "当前歌曲仅提供试听片段" };
   if (explicitlyDisabled || !hasAnyAudioFile) {
-    return { availability: "copyright-restricted", label: "无版权", reason: "当前歌曲受版权限制，暂无完整音源" };
+    return { availability: "unavailable", label: "不可用", reason: "QQ 音乐未返回可用的完整音频文件" };
   }
   return { availability: "playable" };
+}
+
+function findAccountRecord(
+  data: Record<string, unknown> | undefined,
+  accountId: string,
+  mapKeys: string[],
+  listKeys: string[],
+): Record<string, unknown> | undefined {
+  if (!data || !accountId) return undefined;
+  for (const key of mapKeys) {
+    const map = asRecord(data[key]);
+    const direct = asRecord(map?.[accountId]);
+    if (direct) return direct;
+    if (!map) continue;
+    for (const [mapAccountId, value] of Object.entries(map)) {
+      if (normalizeAccountId(mapAccountId) === accountId) {
+        const record = asRecord(value);
+        if (record) return record;
+      }
+    }
+  }
+  for (const key of listKeys) {
+    for (const value of asArray(data[key])) {
+      const record = asRecord(value);
+      if (!record) continue;
+      const recordId = normalizeAccountId(record.uin ?? record.qqmusic_uin ?? record.wxuin ?? record.id);
+      if (recordId === accountId) return record;
+    }
+  }
+  return undefined;
+}
+
+const MEMBERSHIP_FLAG_KEYS = [
+  "HugeVip", "hugeVip", "iSuperVip", "isSuperVip", "superVip", "iVipFlag", "vipFlag",
+  "itwelve", "iTwelve", "ieight", "iEight",
+] as const;
+
+function accountMembership(value: Record<string, unknown> | undefined): AccountMembership | undefined {
+  if (!value) return undefined;
+  const sources = [value, asRecord(value.mVip), asRecord(value.vipInfo)].filter(Boolean) as Record<string, unknown>[];
+  const hasKnownStatus = sources.some(source => MEMBERSHIP_FLAG_KEYS.some(key => Object.prototype.hasOwnProperty.call(source, key)));
+  if (!hasKnownStatus) return undefined;
+
+  const enabled = (...keys: string[]) => sources.some(source => keys.some(key => Number(source[key] ?? 0) > 0));
+  const labels: string[] = [];
+  let tier: string | undefined;
+  if (enabled("HugeVip", "hugeVip")) { labels.push("超级会员"); tier = "SVIP"; }
+  if (enabled("iSuperVip", "isSuperVip", "superVip")) { labels.push("豪华绿钻"); tier ??= "VIP"; }
+  else if (enabled("iVipFlag", "vipFlag")) { labels.push("绿钻"); tier ??= "VIP"; }
+  if (enabled("itwelve", "iTwelve")) { labels.push("豪华音乐包"); tier ??= "VIP"; }
+  else if (enabled("ieight", "iEight")) { labels.push("音乐包"); tier ??= "VIP"; }
+  return {
+    active: labels.length > 0,
+    label: labels.join(" · ") || "普通账号",
+    tier,
+  };
 }
 
 function toOfficialTrack(value: unknown): AccountMusicTrack | null {
@@ -294,7 +355,7 @@ export class QQMusicAccountConnector implements MusicConnector {
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
     description: "QQ Music account login and catalog through the host-owned official provider adapter",
-    version: "0.3.0",
+    version: "0.3.1",
     capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"],
   };
 
@@ -394,8 +455,8 @@ export class QQMusicAccountConnector implements MusicConnector {
     if (!mid) return null;
     const track = this.tracks.get(trackId);
     const access = track?.access;
-    if (access?.availability === "copyright-restricted" || access?.availability === "region-restricted") return null;
-    if (access?.availability === "membership-required" && !this.profile?.membership?.active) {
+    if (access?.availability === "copyright-restricted" || access?.availability === "region-restricted" || access?.availability === "unavailable") return null;
+    if (access?.availability === "membership-required" && this.profile?.membership?.active === false) {
       throw new Error("QQ_MUSIC_MEMBERSHIP_REQUIRED");
     }
     const response = await this.official<Record<string, unknown>>("qq.stream.resolve", {
@@ -504,27 +565,20 @@ export class QQMusicAccountConnector implements MusicConnector {
   private async refreshProfile(): Promise<void> {
     const response = await this.official<Record<string, unknown>>("qq.account.profile");
     const cookie = parseCookieHeader(this.cookie);
-    const uin = (cookie.uin || cookie.qqmusic_uin || cookie.wxuin || cookie.p_uin || "").replace(/\D/g, "");
-    const baseMap = asRecord(asRecord(asRecord(response.req_2)?.data)?.map_userinfo);
-    const base = asRecord(baseMap?.[uin]);
-    const vipMap = asRecord(asRecord(asRecord(response.req_1)?.data)?.infoMap);
-    const vip = asRecord(vipMap?.[uin]);
-    const memberships: string[] = [];
-    let tier: string | undefined;
-    if (Number(vip?.HugeVip)) { memberships.push("超级会员"); tier = "SVIP"; }
-    if (Number(vip?.iSuperVip)) { memberships.push("豪华绿钻"); tier ??= "VIP"; }
-    else if (Number(vip?.iVipFlag)) { memberships.push("绿钻"); tier ??= "VIP"; }
-    if (Number(vip?.itwelve)) { memberships.push("豪华音乐包"); tier ??= "VIP"; }
-    else if (Number(vip?.ieight)) { memberships.push("音乐包"); tier ??= "VIP"; }
+    const uin = resolveQqAccountId(cookie);
+    const baseData = asRecord(asRecord(response.req_2)?.data);
+    const base = findAccountRecord(baseData, uin, ["map_userinfo", "map_user_info", "userInfoMap"], ["vec_userinfo", "user_list"]);
+    const vipData = asRecord(asRecord(response.req_1)?.data);
+    const vip = findAccountRecord(vipData, uin, ["infoMap", "info_map", "vipInfoMap"], ["infoList", "vip_info_list"]);
+    const membership = accountMembership(vip);
+    const isWeChatLogin = Number(cookie.login_type) === 2;
+    const avatarUrl = httpsUrl(base?.headurl ?? base?.head_url ?? base?.avatarUrl ?? base?.avatar)
+      ?? (!isWeChatLogin && uin ? `https://q1.qlogo.cn/g?b=qq&nk=${encodeURIComponent(uin)}&s=640` : undefined);
     this.profile = {
       id: uin || undefined,
-      name: text(base?.nick) || undefined,
-      avatarUrl: httpsUrl(base?.headurl),
-      membership: {
-        active: memberships.length > 0,
-        label: memberships.join(" · ") || "普通账号",
-        tier,
-      },
+      name: text(base?.nick ?? base?.nickname ?? base?.name) || undefined,
+      avatarUrl,
+      membership,
     };
   }
 }

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { QQMusicAccountConnector } from "../index";
 
 const VALID_COOKIE = "uin=123456; qm_keyst=account-session-secret";
+const VALID_WECHAT_COOKIE = "login_type=2; uin=o111111; wxuin=wx_987654; wxskey=wechat-session-secret";
 
 describe("QQMusicAccountConnector", () => {
   afterEach(() => vi.restoreAllMocks());
@@ -14,7 +15,7 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.3.0",
+      version: "0.3.1",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login", "recommendations"]));
     expect(connector.meta.configSchema).toBeUndefined();
@@ -103,6 +104,68 @@ describe("QQMusicAccountConnector", () => {
     expect(status.membership).toEqual(expect.objectContaining({ active: true, tier: "VIP", label: "豪华绿钻" }));
   });
 
+  it("uses wxuin consistently for a real WeChat login profile response", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      expect(operation).toBe("qq.account.profile");
+      return {
+        code: 0,
+        req_1: {
+          code: 0,
+          data: {
+            infoMap: {
+              "987654": { HugeVip: 0, iSuperVip: 1, iVipFlag: 1, itwelve: 0, ieight: 0 },
+            },
+          },
+        },
+        req_2: {
+          code: 0,
+          data: {
+            map_userinfo: {
+              "987654": { uin: "987654", nick: "微信扫码账号", headurl: "//thirdqq.qlogo.cn/avatar.jpg" },
+            },
+          },
+        },
+      };
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_WECHAT_COOKIE }, { officialProviderRequest });
+    const status = await connector.login({ intent: "status" });
+    expect(status.user).toEqual({
+      id: "987654",
+      name: "微信扫码账号",
+      avatarUrl: "https://thirdqq.qlogo.cn/avatar.jpg",
+    });
+    expect(status.membership).toEqual({ active: true, label: "豪华绿钻", tier: "VIP" });
+  });
+
+  it("keeps membership unknown when the current account is absent from profile maps", async () => {
+    const officialProviderRequest = vi.fn(async () => ({
+      req_1: { code: 0, data: { infoMap: { "999999": { iVipFlag: 0 } } } },
+      req_2: { code: 0, data: { map_userinfo: { "999999": { nick: "其他账号" } } } },
+    }));
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const status = await connector.login({ intent: "status" });
+    expect(status.status).toBe("authenticated");
+    expect(status.user).toMatchObject({ id: "123456" });
+    expect(status.user?.name).toBeUndefined();
+    expect(status.user?.avatarUrl).toBe("https://q1.qlogo.cn/g?b=qq&nk=123456&s=640");
+    expect(status.membership).toBeUndefined();
+    expect(JSON.stringify(status)).not.toContain("普通账号");
+  });
+
+  it("labels an account as ordinary only when known membership flags are explicitly inactive", async () => {
+    const officialProviderRequest = vi.fn(async () => ({
+      req_1: { code: 0, data: { infoMap: { "123456": { HugeVip: 0, iSuperVip: 0, iVipFlag: 0, itwelve: 0, ieight: 0 } } } },
+      req_2: { code: 0, data: { map_userinfo: { "123456": { nickname: "普通用户", head_url: "http://qlogo.cn/ordinary.jpg" } } } },
+    }));
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const status = await connector.login({ intent: "status" });
+    expect(status.user).toMatchObject({ name: "普通用户", avatarUrl: "https://qlogo.cn/ordinary.jpg" });
+    expect(status.membership).toEqual({ active: false, label: "普通账号", tier: undefined });
+  });
+
   it("maps account playlists and their tracks without apiBaseUrl", async () => {
     const officialProviderRequest = vi.fn(async (operation: string) => {
       if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
@@ -164,7 +227,7 @@ describe("QQMusicAccountConnector", () => {
 
   it("labels VIP tracks and blocks them for a non-member account", async () => {
     const officialProviderRequest = vi.fn(async (operation: string) => {
-      if (operation === "qq.account.profile") return { req_1: { data: { infoMap: { "123456": {} } } }, req_2: { data: {} } };
+      if (operation === "qq.account.profile") return { req_1: { data: { infoMap: { "123456": { iVipFlag: 0 } } } }, req_2: { data: {} } };
       if (operation === "qq.catalog.search") return {
         req_1: { data: { body: { song: { list: [{ mid: "vip001", name: "会员歌曲", pay: { pay_play: 1 }, file: { media_mid: "vip-media" } }] } } } },
       };
@@ -198,6 +261,66 @@ describe("QQMusicAccountConnector", () => {
     await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     const result = await connector.search({ keyword: "会员歌曲" });
     await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toMatchObject({ format: "flac" });
+  });
+
+  it("tries the official stream when VIP membership is unknown instead of pre-blocking", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: { infoMap: {} } }, req_2: { data: { map_userinfo: {} } } };
+      if (operation === "qq.catalog.search") return {
+        req_1: { data: { body: { song: { list: [{ mid: "vipunknown", name: "未知会员状态歌曲", pay: { pay_play: 1 }, file: { media_mid: "vipmedia", size_128mp3: 1024 } }] } } } },
+      };
+      if (operation === "qq.stream.resolve") {
+        expect(params).toMatchObject({ requiresMembership: true, membershipActive: false });
+        return { req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [{ purl: "M500vip.mp3?vkey=ok" }] } } };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.search({ keyword: "未知会员状态歌曲" });
+    await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toMatchObject({ format: "mp3" });
+  });
+
+  it("maps VIP, file preview and zero-sized audio metadata with stable priority", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return {
+        req_1: { data: { infoMap: { "123456": { iVipFlag: 0 } } } }, req_2: { data: {} },
+      };
+      if (operation === "qq.catalog.search") return {
+        req_1: { data: { body: { song: { list: [
+          {
+            mid: "vippreview",
+            name: "带试听的 VIP 歌曲",
+            pay: { pay_play: 1 },
+            file: { media_mid: "vippreviewmedia", try_begin: 0, try_end: 30000, size_try: 2048, size_128mp3: 1024 },
+          },
+          {
+            mid: "previewonly",
+            name: "普通试听歌曲",
+            pay: { pay_play: 0 },
+            file: { media_mid: "previewmedia", try_begin: 15000, try_end: 45000, size_try: 2048, size_128mp3: 0 },
+          },
+          {
+            mid: "zeroaudio",
+            name: "无完整音频歌曲",
+            pay: { pay_play: 0 },
+            file: {
+              media_mid: "zeromedia", size_128mp3: 0, size_320mp3: 0, size_192aac: 0,
+              size_96aac: 0, size_flac: 0, size_hires: 0, size_try: 0,
+            },
+          },
+        ] } } } },
+      };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.search({ keyword: "权限" });
+    expect(result.tracks[0].access).toMatchObject({ availability: "membership-required", label: "VIP" });
+    expect(result.tracks[1].access).toMatchObject({ availability: "preview", label: "试听" });
+    expect(result.tracks[2].access).toMatchObject({ availability: "unavailable", label: "不可用" });
+    await expect(connector.getStreamUrl(result.tracks[2].id)).resolves.toBeNull();
+    expect(officialProviderRequest).not.toHaveBeenCalledWith("qq.stream.resolve", expect.anything());
   });
 
   it("loads and decodes lyrics through the reviewed host operation", async () => {
