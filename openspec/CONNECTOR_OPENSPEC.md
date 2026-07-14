@@ -1,9 +1,9 @@
 # OpenSpec: QQ Music Account Connector
 
 - Spec-ID: `qq-music-account-connector`
-- Version: `1.1.1`
+- Version: `1.2.0`
 - Status: `Active`
-- Last-Updated: `2026-07-14`
+- Last-Updated: `2026-07-15`
 
 ## Scope
 
@@ -38,10 +38,16 @@
 包含当前账号的会员记录且所有已知会员位均未启用时，才可返回“普通账号”。昵称与
 头像 MUST 兼容 QQ 官方资料响应的常用字段，并统一把官方头像 URL 升级为 HTTPS。
 
-歌曲权限映射 MUST 优先保留 `pay.pay_play` / `pay.payplay` 表示的 VIP 要求，不能
-因为同一曲目存在试听片段就把 VIP 曲目标成普通试听。试听范围 MUST 从 `file` 下的
-`try_begin`、`try_end` 与 `size_try` 读取。若响应明确包含完整音频大小字段且全部为
-零，连接器 MUST 标记为 `unavailable`，不得把未知原因直接宣称为无版权。
+歌曲权限映射 MUST 把目录属性与当前账号播放状态分开：`pay.pay_month` 或
+`pay.pay_play` / `pay.payplay` 任一启用时 MUST 返回通用 `membership` badge；只有
+`pay_play` 启用时才把当前 `availability` 标为 `membership-required`。当前会员账号
+导致 `pay_play=0` 时仍 MUST 保留 VIP badge，并通过 entitlement 表示当前已授权。
+
+试听资源 MUST 从 `file.size_try` 判断，`try_begin` / `try_end` 只补充试听范围；仅有
+非零范围而 `size_try=0` 时不得把完整可播歌曲误标为试听。存在完整音频时，试听资源
+作为 `access.preview` 附加信息，不覆盖 `playable`。若响应明确包含完整音频大小字段且
+全部为零且没有试听资源，连接器 MUST 标记为 `unavailable`，不得把未知原因直接宣称
+为无版权。搜索与歌单曲目 MUST 经过同一套标准化函数。
 
 ## Connector Identity
 

@@ -15,7 +15,7 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.3.1",
+      version: "0.3.2",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login", "recommendations"]));
     expect(connector.meta.configSchema).toBeUndefined();
@@ -309,6 +309,12 @@ describe("QQMusicAccountConnector", () => {
               size_96aac: 0, size_flac: 0, size_hires: 0, size_try: 0,
             },
           },
+          {
+            mid: "freewithrange",
+            name: "带无效试听范围的普通歌曲",
+            pay: { pay_month: 0, pay_play: 0, pay_status: 0 },
+            file: { media_mid: "freemedia", try_begin: 192127, try_end: 249796, size_try: 0, size_128mp3: 1024 },
+          },
         ] } } } },
       };
       throw new Error(`unexpected ${operation}`);
@@ -319,8 +325,36 @@ describe("QQMusicAccountConnector", () => {
     expect(result.tracks[0].access).toMatchObject({ availability: "membership-required", label: "VIP" });
     expect(result.tracks[1].access).toMatchObject({ availability: "preview", label: "试听" });
     expect(result.tracks[2].access).toMatchObject({ availability: "unavailable", label: "不可用" });
+    expect(result.tracks[3].access).toEqual({ availability: "playable" });
     await expect(connector.getStreamUrl(result.tracks[2].id)).resolves.toBeNull();
     expect(officialProviderRequest).not.toHaveBeenCalledWith("qq.stream.resolve", expect.anything());
+  });
+
+  it("keeps the VIP catalog badge when an entitled playlist response is currently playable", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return {
+        req_1: { data: { infoMap: { "123456": { iSuperVip: 1 } } } }, req_2: { data: {} },
+      };
+      if (operation === "qq.playlist.tracks") return {
+        req_1: { data: { total_song_num: 1, songlist: [{
+          mid: "entitledvip",
+          name: "当前会员可播歌曲",
+          pay: { pay_month: 1, pay_play: 0, pay_status: 0 },
+          file: { media_mid: "entitledmedia", size_try: 960887, try_begin: 51681, try_end: 75352, size_128mp3: 3694159 },
+        }] } },
+      };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.getPlaylistTracks!("qq-playlist:88");
+    expect(result.tracks[0].access).toMatchObject({
+      availability: "playable",
+      label: "VIP",
+      badges: [{ kind: "membership", label: "VIP" }],
+      entitlement: { kind: "subscription", state: "granted", tier: "VIP" },
+      preview: { available: true, startMs: 51681, endMs: 75352 },
+    });
   });
 
   it("loads and decodes lyrics through the reviewed host operation", async () => {

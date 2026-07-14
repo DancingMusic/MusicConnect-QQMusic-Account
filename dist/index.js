@@ -76,10 +76,11 @@ function trackAccess(song) {
   const pay = asRecord(song.pay);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
+  const catalogMembership = requiresMembership || Number(pay?.pay_month ?? pay?.paymonth ?? 0) > 0;
   const tryBegin = Number(file?.try_begin ?? file?.trybegin ?? 0);
   const tryEnd = Number(file?.try_end ?? file?.tryend ?? 0);
   const trySize = Number(file?.size_try ?? file?.sizeTry ?? 0);
-  const hasPreview = Number.isFinite(trySize) && trySize > 0 || Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin);
+  const hasPreview = Number.isFinite(trySize) && trySize > 0;
   const explicitlyDisabled = Number(song.disabled ?? 0) > 0;
   const audioSizeKeys = [
     "size_128mp3",
@@ -91,19 +92,47 @@ function trackAccess(song) {
   ];
   const hasAudioSizeMetadata = !!file && audioSizeKeys.some((key) => Object.prototype.hasOwnProperty.call(file, key));
   const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some((key) => Number(file[key] ?? 0) > 0);
+  const badges = catalogMembership ? [{ kind: "membership", label: "VIP", reason: "QQ \u97F3\u4E50\u4F1A\u5458\u76EE\u5F55\u6B4C\u66F2" }] : void 0;
+  const entitlement = catalogMembership ? { kind: "subscription", state: requiresMembership ? "required" : "granted", tier: "VIP" } : void 0;
+  const preview = hasPreview ? {
+    available: true,
+    ...Number.isFinite(tryBegin) && tryBegin >= 0 ? { startMs: tryBegin } : {},
+    ...Number.isFinite(tryEnd) && tryEnd > 0 ? { endMs: tryEnd } : {}
+  } : void 0;
   if (requiresMembership) {
     return {
       availability: "membership-required",
       requiredMembership: "VIP",
       label: "VIP",
-      reason: "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650"
+      reason: "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650",
+      badges,
+      entitlement,
+      preview
     };
   }
-  if (hasPreview) return { availability: "preview", label: "\u8BD5\u542C", reason: "\u5F53\u524D\u6B4C\u66F2\u4EC5\u63D0\u4F9B\u8BD5\u542C\u7247\u6BB5" };
+  if (!hasAnyAudioFile && hasPreview) {
+    return {
+      availability: "preview",
+      label: "\u8BD5\u542C",
+      reason: "\u5F53\u524D\u6B4C\u66F2\u4EC5\u63D0\u4F9B\u8BD5\u542C\u7247\u6BB5",
+      badges: [{ kind: "trial", label: "\u8BD5\u542C" }],
+      preview
+    };
+  }
   if (explicitlyDisabled || !hasAnyAudioFile) {
     return { availability: "unavailable", label: "\u4E0D\u53EF\u7528", reason: "QQ \u97F3\u4E50\u672A\u8FD4\u56DE\u53EF\u7528\u7684\u5B8C\u6574\u97F3\u9891\u6587\u4EF6" };
   }
-  return { availability: "playable" };
+  return {
+    availability: "playable",
+    ...catalogMembership ? {
+      requiredMembership: "VIP",
+      label: "VIP",
+      reason: "\u5F53\u524D\u8D26\u53F7\u5DF2\u5177\u5907 QQ \u97F3\u4E50\u4F1A\u5458\u64AD\u653E\u6743\u9650",
+      badges,
+      entitlement
+    } : {},
+    ...preview ? { preview } : {}
+  };
 }
 function findAccountRecord(data, accountId, mapKeys, listKeys) {
   if (!data || !accountId) return void 0;
@@ -230,7 +259,7 @@ var QQMusicAccountConnector = class {
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
       description: "QQ Music account login and catalog through the host-owned official provider adapter",
-      version: "0.3.1",
+      version: "0.3.2",
       capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"]
     };
     this.cookie = "";

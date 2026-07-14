@@ -1,6 +1,6 @@
 {
   "name": "@dancingmusic/music-connect-qqmusic-account",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "QQ Music account connector for DancingMusic with host-owned official web cookie capture.",
   "homepage": "https://dancingmusic.github.io/MusicConnect-QQMusic-Account/",
   "repository": {
@@ -39,7 +39,7 @@
   ],
   "license": "MIT",
   "peerDependencies": {
-    "@dancingmusic/music-connect": ">=0.2.0"
+    "@dancingmusic/music-connect": ">=0.3.1"
   },
   "overrides": {
     "esbuild": "0.28.1"
@@ -50,7 +50,7 @@
     "@rolldown/binding-linux-x64-gnu": "1.1.5"
   },
   "devDependencies": {
-    "@dancingmusic/music-connect": "github:DancingMusic/MusicConnect#b90bcabdeff428eb1b1bf5a772c40f2c5e4f5013",
+    "@dancingmusic/music-connect": "github:DancingMusic/MusicConnect#6401268f3b548484df6fee9220683cd6e0d1eb87",
     "tsup": "^8.0.0",
     "typescript": "^5.0.0",
     "vitest": "^4.1.10"

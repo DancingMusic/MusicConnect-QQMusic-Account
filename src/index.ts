@@ -18,16 +18,10 @@ import type {
   MusicSearchResult,
   MusicStreamInfo,
   MusicTrack,
+  MusicTrackAccess,
 } from "@dancingmusic/music-connect";
 
-type TrackAvailability = "playable" | "preview" | "membership-required" | "copyright-restricted" | "region-restricted" | "unavailable";
-interface TrackAccess {
-  availability: TrackAvailability;
-  requiredMembership?: string;
-  label?: string;
-  reason?: string;
-}
-type AccountMusicTrack = MusicTrack & { access?: TrackAccess };
+type AccountMusicTrack = MusicTrack & { access?: MusicTrackAccess };
 interface AccountMembership {
   active: boolean;
   label?: string;
@@ -210,21 +204,34 @@ function httpsUrl(value: unknown): string | undefined {
   return raw.replace(/^http:\/\//i, "https://");
 }
 
-function trackAccess(song: Record<string, unknown>): TrackAccess {
+function trackAccess(song: Record<string, unknown>): MusicTrackAccess {
   const pay = asRecord(song.pay);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
+  const catalogMembership = requiresMembership || Number(pay?.pay_month ?? pay?.paymonth ?? 0) > 0;
   const tryBegin = Number(file?.try_begin ?? file?.trybegin ?? 0);
   const tryEnd = Number(file?.try_end ?? file?.tryend ?? 0);
   const trySize = Number(file?.size_try ?? file?.sizeTry ?? 0);
-  const hasPreview = (Number.isFinite(trySize) && trySize > 0)
-    || (Number.isFinite(tryEnd) && tryEnd > Math.max(0, tryBegin));
+  const hasPreview = Number.isFinite(trySize) && trySize > 0;
   const explicitlyDisabled = Number(song.disabled ?? 0) > 0;
   const audioSizeKeys = [
     "size_128mp3", "size_320mp3", "size_192aac", "size_96aac", "size_flac", "size_hires",
   ];
   const hasAudioSizeMetadata = !!file && audioSizeKeys.some(key => Object.prototype.hasOwnProperty.call(file, key));
   const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some(key => Number(file[key] ?? 0) > 0);
+  const badges = catalogMembership
+    ? [{ kind: "membership", label: "VIP", reason: "QQ 音乐会员目录歌曲" }]
+    : undefined;
+  const entitlement = catalogMembership
+    ? { kind: "subscription", state: requiresMembership ? "required" as const : "granted" as const, tier: "VIP" }
+    : undefined;
+  const preview = hasPreview
+    ? {
+        available: true,
+        ...(Number.isFinite(tryBegin) && tryBegin >= 0 ? { startMs: tryBegin } : {}),
+        ...(Number.isFinite(tryEnd) && tryEnd > 0 ? { endMs: tryEnd } : {}),
+      }
+    : undefined;
 
   if (requiresMembership) {
     return {
@@ -232,13 +239,34 @@ function trackAccess(song: Record<string, unknown>): TrackAccess {
       requiredMembership: "VIP",
       label: "VIP",
       reason: "需要有效的 QQ 音乐会员权限",
+      badges,
+      entitlement,
+      preview,
     };
   }
-  if (hasPreview) return { availability: "preview", label: "试听", reason: "当前歌曲仅提供试听片段" };
+  if (!hasAnyAudioFile && hasPreview) {
+    return {
+      availability: "preview",
+      label: "试听",
+      reason: "当前歌曲仅提供试听片段",
+      badges: [{ kind: "trial", label: "试听" }],
+      preview,
+    };
+  }
   if (explicitlyDisabled || !hasAnyAudioFile) {
     return { availability: "unavailable", label: "不可用", reason: "QQ 音乐未返回可用的完整音频文件" };
   }
-  return { availability: "playable" };
+  return {
+    availability: "playable",
+    ...(catalogMembership ? {
+      requiredMembership: "VIP",
+      label: "VIP",
+      reason: "当前账号已具备 QQ 音乐会员播放权限",
+      badges,
+      entitlement,
+    } : {}),
+    ...(preview ? { preview } : {}),
+  };
 }
 
 function findAccountRecord(
@@ -355,7 +383,7 @@ export class QQMusicAccountConnector implements MusicConnector {
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
     description: "QQ Music account login and catalog through the host-owned official provider adapter",
-    version: "0.3.1",
+    version: "0.3.2",
     capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"],
   };
 
