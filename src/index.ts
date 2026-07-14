@@ -10,6 +10,9 @@ import type {
   MusicConnectorLoginRequest,
   MusicConnectorLoginResult,
   MusicConnectorMeta,
+  MusicFavoriteMutationResult,
+  MusicFavoriteTrackList,
+  MusicFavoriteTracksQuery,
   MusicListQuery,
   MusicLyrics,
   MusicPlaylist,
@@ -357,6 +360,61 @@ function officialMediaMid(value: unknown): string {
   return text(file?.media_mid ?? file?.mediaMid ?? song?.media_mid);
 }
 
+function officialSongReference(value: unknown): { songId: number; songType: number } | null {
+  const outer = asRecord(value);
+  const song = asRecord(outer?.songInfo) ?? outer;
+  const songId = Number(song?.id ?? song?.songid ?? song?.song_id);
+  const songType = Number(song?.type ?? song?.songtype ?? song?.song_type ?? 0);
+  if (!Number.isSafeInteger(songId) || songId <= 0 || !Number.isSafeInteger(songType) || songType < 0) return null;
+  return { songId, songType };
+}
+
+function officialTrackList(response: Record<string, unknown>): { values: unknown[]; total: number } {
+  const envelope = asRecord(response.req_1);
+  const data = asRecord(envelope?.data) ?? asRecord(response.data) ?? response;
+  const body = asRecord(data.body);
+  const song = asRecord(body?.song) ?? asRecord(data.song);
+  const candidates = [
+    data.songlist,
+    data.song_list,
+    data.trackList,
+    data.track_list,
+    data.list,
+    data.tracks,
+    song?.list,
+  ];
+  const values = candidates.find(Array.isArray) as unknown[] | undefined ?? [];
+  const total = Number(
+    data.total_song_num ?? data.totalSongNum ?? data.total ?? data.song_count
+      ?? song?.totalnum ?? song?.total ?? values.length,
+  );
+  return { values, total: Number.isFinite(total) && total >= 0 ? total : values.length };
+}
+
+function confirmedBoolean(value: unknown): boolean | undefined {
+  if (typeof value === "boolean") return value;
+  if (value === 0 || value === "0") return false;
+  if (value === 1 || value === "1") return true;
+  return undefined;
+}
+
+function favoriteMutationState(response: Record<string, unknown>): { favorite: boolean; changed?: boolean } | null {
+  const data = asRecord(asRecord(response.req_1)?.data) ?? asRecord(response.data) ?? response;
+  const favorite = [
+    response.favorite,
+    response.liked,
+    data.favorite,
+    data.liked,
+    data.isFavorite,
+    data.is_favorite,
+  ].map(confirmedBoolean).find(value => value !== undefined);
+  if (favorite === undefined) return null;
+  const changed = [response.changed, data.changed]
+    .map(confirmedBoolean)
+    .find(value => value !== undefined);
+  return { favorite, ...(changed === undefined ? {} : { changed }) };
+}
+
 function toOfficialPlaylist(value: unknown): MusicPlaylist | null {
   const item = asRecord(value);
   if (!item) return null;
@@ -383,8 +441,11 @@ export class QQMusicAccountConnector implements MusicConnector {
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
     description: "QQ Music account login and catalog through the host-owned official provider adapter",
-    version: "0.3.2",
-    capabilities: ["search", "stream", "lyrics", "playlist", "login", "user-library", "recommendations"],
+    version: "0.4.0",
+    capabilities: [
+      "search", "stream", "lyrics", "playlist", "login", "user-library",
+      "favorites-read", "favorites-write", "recommendations",
+    ],
   };
 
   private cookie = "";
@@ -392,6 +453,7 @@ export class QQMusicAccountConnector implements MusicConnector {
   private profile: { id?: string; name?: string; avatarUrl?: string; membership?: AccountMembership } | null = null;
   private tracks = new Map<string, AccountMusicTrack>();
   private mediaMids = new Map<string, string>();
+  private songReferences = new Map<string, { songId: number; songType: number }>();
 
   async init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void> {
     const typed = config as QQMusicAccountConfig | undefined;
@@ -463,13 +525,7 @@ export class QQMusicAccountConnector implements MusicConnector {
     const body = asRecord(data?.body);
     const song = asRecord(body?.song);
     const rawList = asArray(song?.list);
-    const list = rawList.map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
-    rawList.forEach(value => {
-      const track = toOfficialTrack(value);
-      const mediaMid = officialMediaMid(value);
-      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
-    });
-    list.forEach(item => this.tracks.set(item.id, item));
+    const list = this.rememberOfficialTracks(rawList);
     const meta = asRecord(data?.meta);
     return { tracks: list, total: Number(meta?.sum ?? list.length), page, pageSize };
   }
@@ -541,14 +597,39 @@ export class QQMusicAccountConnector implements MusicConnector {
     });
     const data = asRecord(asRecord(response.req_1)?.data);
     const rawSongs = asArray(data?.songlist);
-    const songs = rawSongs.map(toOfficialTrack).filter((item): item is MusicTrack => !!item);
-    rawSongs.forEach(value => {
-      const track = toOfficialTrack(value);
-      const mediaMid = officialMediaMid(value);
-      if (track && mediaMid) this.mediaMids.set(track.id, mediaMid);
-    });
-    songs.forEach(item => this.tracks.set(item.id, item));
+    const songs = this.rememberOfficialTracks(rawSongs);
     return { tracks: songs, total: Number(data?.total_song_num ?? songs.length), page, pageSize };
+  }
+
+  async listFavoriteTracks(query: MusicFavoriteTracksQuery = {}): Promise<MusicFavoriteTrackList> {
+    const page = Math.max(1, Math.trunc(query.page ?? 1));
+    const pageSize = Math.max(1, Math.min(100, Math.trunc(query.pageSize ?? 30)));
+    const response = await this.official<Record<string, unknown>>("qq.account.liked.list", { page, pageSize });
+    const { values, total } = officialTrackList(response);
+    const tracks = this.rememberOfficialTracks(values);
+    return { tracks, total, page, pageSize, syncedAt: Date.now() };
+  }
+
+  async setTrackFavorite(trackId: string, favorite: boolean): Promise<MusicFavoriteMutationResult> {
+    const mid = this.parseTrackId(trackId);
+    if (!mid || !/^[A-Za-z0-9]+$/.test(mid)) throw new Error("INVALID_QQ_SONGMID");
+    if (typeof favorite !== "boolean") throw new Error("INVALID_FAVORITE_STATE");
+    const songReference = this.songReferences.get(`qq:${mid}`);
+    const response = await this.official<Record<string, unknown>>("qq.account.liked.set", {
+      songmid: mid,
+      ...(songReference ?? {}),
+      favorite,
+    });
+    const state = favoriteMutationState(response);
+    if (!state || state.favorite !== favorite) {
+      throw new Error("QQ_MUSIC_FAVORITE_STATE_UNCONFIRMED");
+    }
+    return {
+      trackId: `qq:${mid}`,
+      favorite: state.favorite,
+      ...(state.changed === undefined ? {} : { changed: state.changed }),
+      syncedAt: Date.now(),
+    };
   }
 
   private startWebLogin(message = "请在 QQ 音乐官方页面扫码登录；桌面端会自动安全保存账号会话"): MusicConnectorLoginResult {
@@ -582,6 +663,21 @@ export class QQMusicAccountConnector implements MusicConnector {
 
   private parsePlaylistId(playlistId: string): string | null {
     return playlistId.startsWith("qq-playlist:") ? playlistId.slice("qq-playlist:".length) : playlistId || null;
+  }
+
+  private rememberOfficialTracks(values: unknown[]): AccountMusicTrack[] {
+    const tracks: AccountMusicTrack[] = [];
+    values.forEach(value => {
+      const track = toOfficialTrack(value);
+      if (!track) return;
+      tracks.push(track);
+      this.tracks.set(track.id, track);
+      const mediaMid = officialMediaMid(value);
+      if (mediaMid) this.mediaMids.set(track.id, mediaMid);
+      const songReference = officialSongReference(value);
+      if (songReference) this.songReferences.set(track.id, songReference);
+    });
+    return tracks;
   }
 
   private async official<T>(operation: string, params: Record<string, unknown> = {}): Promise<T> {

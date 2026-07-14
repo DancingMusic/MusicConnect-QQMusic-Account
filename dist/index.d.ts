@@ -1,4 +1,4 @@
-import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicLyrics, MusicPlaylistQuery, MusicPlaylistList } from '@dancingmusic/music-connect';
+import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicConnectorLoginResult, MusicListQuery, MusicSearchResult, MusicTrack, MusicStreamInfo, MusicLyrics, MusicPlaylistQuery, MusicPlaylistList, MusicFavoriteTracksQuery, MusicFavoriteTrackList, MusicFavoriteMutationResult } from '@dancingmusic/music-connect';
 
 /**
  * QQ Music account connector for DancingMusic.
@@ -22,6 +22,7 @@ declare class QQMusicAccountConnector implements MusicConnector {
     private profile;
     private tracks;
     private mediaMids;
+    private songReferences;
     init(config?: Record<string, unknown>, host?: QQMusicAccountHost): Promise<void>;
     login(request?: MusicConnectorLoginRequest): Promise<MusicConnectorLoginResult>;
     search(query: MusicListQuery): Promise<MusicSearchResult>;
@@ -33,9 +34,12 @@ declare class QQMusicAccountConnector implements MusicConnector {
         page?: number;
         pageSize?: number;
     }): Promise<MusicSearchResult>;
+    listFavoriteTracks(query?: MusicFavoriteTracksQuery): Promise<MusicFavoriteTrackList>;
+    setTrackFavorite(trackId: string, favorite: boolean): Promise<MusicFavoriteMutationResult>;
     private startWebLogin;
     private parseTrackId;
     private parsePlaylistId;
+    private rememberOfficialTracks;
     private official;
     private refreshProfile;
 }

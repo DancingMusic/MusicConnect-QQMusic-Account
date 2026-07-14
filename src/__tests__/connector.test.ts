@@ -15,9 +15,11 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.3.2",
+      version: "0.4.0",
     });
-    expect(connector.meta.capabilities).toEqual(expect.arrayContaining(["search", "stream", "lyrics", "playlist", "login", "recommendations"]));
+    expect(connector.meta.capabilities).toEqual(expect.arrayContaining([
+      "search", "stream", "lyrics", "playlist", "login", "favorites-read", "favorites-write", "recommendations",
+    ]));
     expect(connector.meta.configSchema).toBeUndefined();
   });
 
@@ -183,6 +185,103 @@ describe("QQMusicAccountConnector", () => {
     expect(playlists.playlists[0]).toMatchObject({ id: "qq-playlist:88", name: "我喜欢", coverUrl: "https://y.gtimg.cn/cover.jpg" });
     const tracks = await connector.getPlaylistTracks!(playlists.playlists[0].id);
     expect(tracks.tracks[0]).toMatchObject({ id: "qq:001abc", title: "测试歌", artist: "歌手" });
+  });
+
+  it("reads the remote liked-song library through the reviewed account operation", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.account.liked.list") {
+        expect(params).toEqual({ page: 2, pageSize: 20 });
+        return {
+          req_1: { data: { total_song_num: 41, songlist: [{
+            id: 91001,
+            type: 0,
+            mid: "liked001",
+            name: "渠道收藏歌曲",
+            singer: [{ name: "收藏歌手" }],
+            album: { name: "收藏专辑", mid: "album001" },
+            file: { media_mid: "media-liked001", size_128mp3: 1024 },
+          }] } },
+        };
+      }
+      if (operation === "qq.account.liked.set") {
+        expect(params).toEqual({
+          songmid: "liked001",
+          songId: 91001,
+          songType: 0,
+          favorite: true,
+        });
+        return { favorite: true, changed: false };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    const result = await connector.listFavoriteTracks({ page: 2, pageSize: 20 });
+    expect(result).toMatchObject({
+      total: 41,
+      page: 2,
+      pageSize: 20,
+      tracks: [{ id: "qq:liked001", title: "渠道收藏歌曲", artist: "收藏歌手" }],
+    });
+    expect(result.syncedAt).toEqual(expect.any(Number));
+    expect(await connector.getTrack("qq:liked001")).toMatchObject({ title: "渠道收藏歌曲" });
+    await expect(connector.setTrackFavorite("qq:liked001", true)).resolves.toMatchObject({
+      favorite: true,
+      changed: false,
+    });
+    expect(JSON.stringify(officialProviderRequest.mock.calls)).not.toContain("account-session-secret");
+  });
+
+  it("sets the requested remote favorite state and preserves provider idempotency", async () => {
+    let favorite = false;
+    const officialProviderRequest = vi.fn(async (operation: string, params?: Record<string, unknown>) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.account.liked.set") {
+        expect(params?.songmid).toBe("liked001");
+        const requested = params?.favorite === true;
+        const changed = favorite !== requested;
+        favorite = requested;
+        return { favorite, changed };
+      }
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    await expect(connector.setTrackFavorite("qq:liked001", true)).resolves.toMatchObject({
+      trackId: "qq:liked001", favorite: true, changed: true,
+    });
+    await expect(connector.setTrackFavorite("qq:liked001", true)).resolves.toMatchObject({
+      trackId: "qq:liked001", favorite: true, changed: false,
+    });
+    await expect(connector.setTrackFavorite("qq:liked001", false)).resolves.toMatchObject({
+      trackId: "qq:liked001", favorite: false, changed: true,
+    });
+  });
+
+  it("rejects a favorite mutation when the provider cannot confirm the final state", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      if (operation === "qq.account.liked.set") return { req_1: { data: { changed: true } } };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    await expect(connector.setTrackFavorite("qq:liked001", true))
+      .rejects.toThrow("QQ_MUSIC_FAVORITE_STATE_UNCONFIRMED");
+  });
+
+  it("rejects malformed favorite mutations before invoking the provider", async () => {
+    const officialProviderRequest = vi.fn(async (operation: string) => {
+      if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
+      throw new Error(`unexpected ${operation}`);
+    });
+    const connector = new QQMusicAccountConnector();
+    await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
+    await expect(connector.setTrackFavorite("qq:not-valid!", true)).rejects.toThrow("INVALID_QQ_SONGMID");
+    await expect(connector.setTrackFavorite("qq:liked001", undefined as unknown as boolean))
+      .rejects.toThrow("INVALID_FAVORITE_STATE");
+    expect(officialProviderRequest).toHaveBeenCalledTimes(1);
   });
 
   it("uses only reviewed host operation ids and never exposes the cookie", async () => {
