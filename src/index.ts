@@ -207,7 +207,10 @@ function httpsUrl(value: unknown): string | undefined {
   return raw.replace(/^http:\/\//i, "https://");
 }
 
-function trackAccess(song: Record<string, unknown>): MusicTrackAccess {
+function trackAccess(
+  song: Record<string, unknown>,
+  membership?: AccountMembership,
+): MusicTrackAccess {
   const pay = asRecord(song.pay);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
@@ -226,7 +229,17 @@ function trackAccess(song: Record<string, unknown>): MusicTrackAccess {
     ? [{ kind: "membership", label: "VIP", reason: "QQ 音乐会员目录歌曲" }]
     : undefined;
   const entitlement = catalogMembership
-    ? { kind: "subscription", state: requiresMembership ? "required" as const : "granted" as const, tier: "VIP" }
+    ? {
+        kind: "subscription",
+        state: requiresMembership
+          ? membership?.active === true
+            ? "granted" as const
+            : membership?.active === false
+              ? "required" as const
+              : "unknown" as const
+          : "granted" as const,
+        tier: "VIP",
+      }
     : undefined;
   const preview = hasPreview
     ? {
@@ -236,12 +249,14 @@ function trackAccess(song: Record<string, unknown>): MusicTrackAccess {
       }
     : undefined;
 
-  if (requiresMembership) {
+  if (requiresMembership && membership?.active !== true) {
     return {
       availability: "membership-required",
       requiredMembership: "VIP",
       label: "VIP",
-      reason: "需要有效的 QQ 音乐会员权限",
+      reason: membership?.active === false
+        ? "需要有效的 QQ 音乐会员权限"
+        : "当前账号会员状态尚未确认",
       badges,
       entitlement,
       preview,
@@ -328,7 +343,7 @@ function accountMembership(value: Record<string, unknown> | undefined): AccountM
   };
 }
 
-function toOfficialTrack(value: unknown): AccountMusicTrack | null {
+function toOfficialTrack(value: unknown, membership?: AccountMembership): AccountMusicTrack | null {
   const outer = asRecord(value);
   const song = asRecord(outer?.songInfo) ?? outer;
   if (!song) return null;
@@ -349,7 +364,7 @@ function toOfficialTrack(value: unknown): AccountMusicTrack | null {
     version: "1.0.0",
     createdAt: "",
     updatedAt: "",
-    access: trackAccess(song),
+    access: trackAccess(song, membership),
   };
 }
 
@@ -441,7 +456,7 @@ export class QQMusicAccountConnector implements MusicConnector {
     supportedHosts: ["desktop"],
     name: "QQ 音乐账号",
     description: "QQ Music account login and catalog through the host-owned official provider adapter",
-    version: "0.4.0",
+    version: "0.4.1",
     capabilities: [
       "search", "stream", "lyrics", "playlist", "login", "user-library",
       "favorites-read", "favorites-write", "recommendations",
@@ -543,11 +558,17 @@ export class QQMusicAccountConnector implements MusicConnector {
     if (access?.availability === "membership-required" && this.profile?.membership?.active === false) {
       throw new Error("QQ_MUSIC_MEMBERSHIP_REQUIRED");
     }
+    const requiresMembership = Boolean(
+      access?.requiredMembership
+      || access?.badges?.some(badge => badge.kind === "membership")
+      || access?.entitlement?.kind === "subscription",
+    );
+    const membershipActive = this.profile?.membership?.active;
     const response = await this.official<Record<string, unknown>>("qq.stream.resolve", {
       songmid: mid,
       ...(this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {}),
-      requiresMembership: access?.availability === "membership-required",
-      membershipActive: this.profile?.membership?.active === true,
+      requiresMembership,
+      ...(typeof membershipActive === "boolean" ? { membershipActive } : {}),
     });
     const envelope = asRecord(response.req_0) ?? asRecord(response.req_1);
     const data = asRecord(envelope?.data);
@@ -668,7 +689,7 @@ export class QQMusicAccountConnector implements MusicConnector {
   private rememberOfficialTracks(values: unknown[]): AccountMusicTrack[] {
     const tracks: AccountMusicTrack[] = [];
     values.forEach(value => {
-      const track = toOfficialTrack(value);
+      const track = toOfficialTrack(value, this.profile?.membership);
       if (!track) return;
       tracks.push(track);
       this.tracks.set(track.id, track);

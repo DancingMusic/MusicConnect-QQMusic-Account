@@ -15,7 +15,7 @@ describe("QQMusicAccountConnector", () => {
       variant: "account",
       authRequirement: "required",
       supportedHosts: ["desktop"],
-      version: "0.4.0",
+      version: "0.4.1",
     });
     expect(connector.meta.capabilities).toEqual(expect.arrayContaining([
       "search", "stream", "lyrics", "playlist", "login", "favorites-read", "favorites-write", "recommendations",
@@ -304,7 +304,6 @@ describe("QQMusicAccountConnector", () => {
           songmid: "001abc",
           mediaMid: "media001",
           requiresMembership: false,
-          membershipActive: false,
         });
         return {
           req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [
@@ -359,6 +358,12 @@ describe("QQMusicAccountConnector", () => {
     const connector = new QQMusicAccountConnector();
     await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     const result = await connector.search({ keyword: "会员歌曲" });
+    expect(result.tracks[0].access).toMatchObject({
+      availability: "playable",
+      requiredMembership: "VIP",
+      entitlement: { kind: "subscription", state: "granted", tier: "VIP" },
+      badges: [{ kind: "membership", label: "VIP" }],
+    });
     await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toMatchObject({ format: "flac" });
   });
 
@@ -369,7 +374,11 @@ describe("QQMusicAccountConnector", () => {
         req_1: { data: { body: { song: { list: [{ mid: "vipunknown", name: "未知会员状态歌曲", pay: { pay_play: 1 }, file: { media_mid: "vipmedia", size_128mp3: 1024 } }] } } } },
       };
       if (operation === "qq.stream.resolve") {
-        expect(params).toMatchObject({ requiresMembership: true, membershipActive: false });
+        expect(params).toEqual({
+          songmid: "vipunknown",
+          mediaMid: "vipmedia",
+          requiresMembership: true,
+        });
         return { req_0: { data: { sip: ["https://stream.qqmusic.qq.com/"], midurlinfo: [{ purl: "M500vip.mp3?vkey=ok" }] } } };
       }
       throw new Error(`unexpected ${operation}`);
@@ -377,6 +386,10 @@ describe("QQMusicAccountConnector", () => {
     const connector = new QQMusicAccountConnector();
     await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     const result = await connector.search({ keyword: "未知会员状态歌曲" });
+    expect(result.tracks[0].access).toMatchObject({
+      availability: "membership-required",
+      entitlement: { kind: "subscription", state: "unknown", tier: "VIP" },
+    });
     await expect(connector.getStreamUrl(result.tracks[0].id)).resolves.toMatchObject({ format: "mp3" });
   });
 

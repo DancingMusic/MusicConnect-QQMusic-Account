@@ -72,7 +72,7 @@ function httpsUrl(value) {
   if (raw.startsWith("//")) return `https:${raw}`;
   return raw.replace(/^http:\/\//i, "https://");
 }
-function trackAccess(song) {
+function trackAccess(song, membership) {
   const pay = asRecord(song.pay);
   const file = asRecord(song.file);
   const requiresMembership = Number(pay?.pay_play ?? pay?.payplay ?? 0) > 0;
@@ -93,18 +93,22 @@ function trackAccess(song) {
   const hasAudioSizeMetadata = !!file && audioSizeKeys.some((key) => Object.prototype.hasOwnProperty.call(file, key));
   const hasAnyAudioFile = !file || !hasAudioSizeMetadata || audioSizeKeys.some((key) => Number(file[key] ?? 0) > 0);
   const badges = catalogMembership ? [{ kind: "membership", label: "VIP", reason: "QQ \u97F3\u4E50\u4F1A\u5458\u76EE\u5F55\u6B4C\u66F2" }] : void 0;
-  const entitlement = catalogMembership ? { kind: "subscription", state: requiresMembership ? "required" : "granted", tier: "VIP" } : void 0;
+  const entitlement = catalogMembership ? {
+    kind: "subscription",
+    state: requiresMembership ? membership?.active === true ? "granted" : membership?.active === false ? "required" : "unknown" : "granted",
+    tier: "VIP"
+  } : void 0;
   const preview = hasPreview ? {
     available: true,
     ...Number.isFinite(tryBegin) && tryBegin >= 0 ? { startMs: tryBegin } : {},
     ...Number.isFinite(tryEnd) && tryEnd > 0 ? { endMs: tryEnd } : {}
   } : void 0;
-  if (requiresMembership) {
+  if (requiresMembership && membership?.active !== true) {
     return {
       availability: "membership-required",
       requiredMembership: "VIP",
       label: "VIP",
-      reason: "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650",
+      reason: membership?.active === false ? "\u9700\u8981\u6709\u6548\u7684 QQ \u97F3\u4E50\u4F1A\u5458\u6743\u9650" : "\u5F53\u524D\u8D26\u53F7\u4F1A\u5458\u72B6\u6001\u5C1A\u672A\u786E\u8BA4",
       badges,
       entitlement,
       preview
@@ -203,7 +207,7 @@ function accountMembership(value) {
     tier
   };
 }
-function toOfficialTrack(value) {
+function toOfficialTrack(value, membership) {
   const outer = asRecord(value);
   const song = asRecord(outer?.songInfo) ?? outer;
   if (!song) return null;
@@ -224,7 +228,7 @@ function toOfficialTrack(value) {
     version: "1.0.0",
     createdAt: "",
     updatedAt: "",
-    access: trackAccess(song)
+    access: trackAccess(song, membership)
   };
 }
 function officialMediaMid(value) {
@@ -307,7 +311,7 @@ var QQMusicAccountConnector = class {
       supportedHosts: ["desktop"],
       name: "QQ \u97F3\u4E50\u8D26\u53F7",
       description: "QQ Music account login and catalog through the host-owned official provider adapter",
-      version: "0.4.0",
+      version: "0.4.1",
       capabilities: [
         "search",
         "stream",
@@ -407,11 +411,15 @@ var QQMusicAccountConnector = class {
     if (access?.availability === "membership-required" && this.profile?.membership?.active === false) {
       throw new Error("QQ_MUSIC_MEMBERSHIP_REQUIRED");
     }
+    const requiresMembership = Boolean(
+      access?.requiredMembership || access?.badges?.some((badge) => badge.kind === "membership") || access?.entitlement?.kind === "subscription"
+    );
+    const membershipActive = this.profile?.membership?.active;
     const response = await this.official("qq.stream.resolve", {
       songmid: mid,
       ...this.mediaMids.get(trackId) ? { mediaMid: this.mediaMids.get(trackId) } : {},
-      requiresMembership: access?.availability === "membership-required",
-      membershipActive: this.profile?.membership?.active === true
+      requiresMembership,
+      ...typeof membershipActive === "boolean" ? { membershipActive } : {}
     });
     const envelope = asRecord(response.req_0) ?? asRecord(response.req_1);
     const data = asRecord(envelope?.data);
@@ -521,7 +529,7 @@ var QQMusicAccountConnector = class {
   rememberOfficialTracks(values) {
     const tracks = [];
     values.forEach((value) => {
-      const track = toOfficialTrack(value);
+      const track = toOfficialTrack(value, this.profile?.membership);
       if (!track) return;
       tracks.push(track);
       this.tracks.set(track.id, track);

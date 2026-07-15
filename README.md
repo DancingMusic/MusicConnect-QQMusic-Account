@@ -71,7 +71,7 @@ npm run build
 固定版本加载地址：
 
 ```text
-https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-QQMusic-Account@v0.4.0/dist/index.js
+https://cdn.jsdelivr.net/gh/DancingMusic/MusicConnect-QQMusic-Account@v0.4.1/dist/index.js
 ```
 
 统一文档：[DancingMusic Docs](https://dancingmusic.github.io/docs/)
