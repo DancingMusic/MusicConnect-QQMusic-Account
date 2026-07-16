@@ -172,7 +172,7 @@ describe("QQMusicAccountConnector", () => {
     const officialProviderRequest = vi.fn(async (operation: string) => {
       if (operation === "qq.account.profile") return { req_1: { data: {} }, req_2: { data: {} } };
       if (operation === "qq.account.playlists") return {
-        req_1: { data: { v_playlist: [{ tid: 88, dirName: "我喜欢", picurl: "http://y.gtimg.cn/cover.jpg", song_cnt: 2 }] } },
+        req_1: { data: { v_playlist: [{ tid: 88, dirName: "我喜欢", picurl: "/cover.jpg", song_cnt: 2 }] } },
       };
       if (operation === "qq.playlist.tracks") return {
         req_1: { data: { total_song_num: 1, songlist: [{ mid: "001abc", name: "测试歌", singer: [{ name: "歌手" }], album: { name: "专辑", mid: "002album" }, interval: 200 }] } },
@@ -182,7 +182,7 @@ describe("QQMusicAccountConnector", () => {
     const connector = new QQMusicAccountConnector();
     await connector.init({ cookie: VALID_COOKIE }, { officialProviderRequest });
     const playlists = await connector.listPlaylists!();
-    expect(playlists.playlists[0]).toMatchObject({ id: "qq-playlist:88", name: "我喜欢", coverUrl: "https://y.gtimg.cn/cover.jpg" });
+    expect(playlists.playlists[0]).toMatchObject({ id: "qq-playlist:88", name: "我喜欢", coverUrl: "https://y.qq.com/cover.jpg" });
     const tracks = await connector.getPlaylistTracks!(playlists.playlists[0].id);
     expect(tracks.tracks[0]).toMatchObject({ id: "qq:001abc", title: "测试歌", artist: "歌手" });
   });

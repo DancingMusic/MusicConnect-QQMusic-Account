@@ -1,4 +1,5 @@
 // src/index.ts
+var QQ_MUSIC_ARTWORK_ORIGINS = ["https://y.gtimg.cn", "https://y.qq.com"];
 var QQ_WEB_COOKIE_FLOW_ID = "qq-music-account-web-cookie";
 var QQ_LOGIN_URL = "https://y.qq.com/n/ryqq/profile";
 var QQ_WARMUP_URL = "https://y.qq.com/n/ryqq/player";
@@ -55,7 +56,7 @@ function qqCookieHasPlaybackLogin(cookieText) {
   return Boolean(uin && playbackKey);
 }
 function albumCover(mid) {
-  return mid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${mid}.jpg` : void 0;
+  return mid ? `${QQ_MUSIC_ARTWORK_ORIGINS[0]}/music/photo_new/T002R300x300M000${mid}.jpg` : void 0;
 }
 function asRecord(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
@@ -70,6 +71,7 @@ function httpsUrl(value) {
   const raw = text(value).trim();
   if (!raw) return void 0;
   if (raw.startsWith("//")) return `https:${raw}`;
+  if (raw.startsWith("/")) return new URL(raw, QQ_MUSIC_ARTWORK_ORIGINS[1]).toString();
   return raw.replace(/^http:\/\//i, "https://");
 }
 function trackAccess(song, membership) {
@@ -579,5 +581,6 @@ function decodeProviderText(value) {
 var index_default = QQMusicAccountConnector;
 export {
   QQMusicAccountConnector,
+  QQ_MUSIC_ARTWORK_ORIGINS,
   index_default as default
 };

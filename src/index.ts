@@ -24,6 +24,8 @@ import type {
   MusicTrackAccess,
 } from "@dancingmusic/music-connect";
 
+export const QQ_MUSIC_ARTWORK_ORIGINS = ["https://y.gtimg.cn", "https://y.qq.com"] as const;
+
 type AccountMusicTrack = MusicTrack & { access?: MusicTrackAccess };
 interface AccountMembership {
   active: boolean;
@@ -155,7 +157,7 @@ function joinSinger(song: QQSong): string {
 }
 
 function albumCover(mid?: string): string | undefined {
-  return mid ? `https://y.gtimg.cn/music/photo_new/T002R300x300M000${mid}.jpg` : undefined;
+  return mid ? `${QQ_MUSIC_ARTWORK_ORIGINS[0]}/music/photo_new/T002R300x300M000${mid}.jpg` : undefined;
 }
 
 function toTrack(song: QQSong): MusicTrack {
@@ -181,7 +183,7 @@ function toPlaylist(playlist: QQPlaylist): MusicPlaylist {
     id: `qq-playlist:${id}`,
     name: playlist.dissname || "Unknown",
     description: playlist.introduction,
-    coverUrl: playlist.imgurl,
+    coverUrl: httpsUrl(playlist.imgurl),
     trackCount: playlist.song_count ?? playlist.song_num,
     curator: playlist.creator?.name,
     externalUrl: id ? `https://y.qq.com/n/ryqq/playlist/${id}` : undefined,
@@ -204,6 +206,7 @@ function httpsUrl(value: unknown): string | undefined {
   const raw = text(value).trim();
   if (!raw) return undefined;
   if (raw.startsWith("//")) return `https:${raw}`;
+  if (raw.startsWith("/")) return new URL(raw, QQ_MUSIC_ARTWORK_ORIGINS[1]).toString();
   return raw.replace(/^http:\/\//i, "https://");
 }
 

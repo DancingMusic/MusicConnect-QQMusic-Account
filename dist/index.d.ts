@@ -8,6 +8,7 @@ import { MusicConnector, MusicConnectorMeta, MusicConnectorLoginRequest, MusicCo
  * Catalog gateway requests are intentionally credential-free.
  */
 
+declare const QQ_MUSIC_ARTWORK_ORIGINS: readonly ["https://y.gtimg.cn", "https://y.qq.com"];
 interface QQMusicAccountConfig {
     /** Secret injected at runtime by the DancingMusic host credential vault. */
     cookie?: string;
@@ -44,4 +45,4 @@ declare class QQMusicAccountConnector implements MusicConnector {
     private refreshProfile;
 }
 
-export { type QQMusicAccountConfig, QQMusicAccountConnector, QQMusicAccountConnector as default };
+export { type QQMusicAccountConfig, QQMusicAccountConnector, QQ_MUSIC_ARTWORK_ORIGINS, QQMusicAccountConnector as default };
